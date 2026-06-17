@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMM系统 - 平整度报告</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="main-container">
+        <!-- 左侧报告列表 -->
+        <div class="sidebar">
+            <h2>平整度报告列表</h2>
+            
+            <!-- 搜索框 -->
+            <div class="search-container">
+                <input type="text" id="searchInput" placeholder="搜索叶片名称..." onkeyup="filterReports()">
+            </div>
+            
+            {% if reports %}
+            <ul class="report-list" id="reportList">
+                {% for report in reports %}
+                <li class="report-item" id="report-{{ loop.index0 }}" onclick="loadReportAndHighlight(this, '{{ report.file_name }}')">
+                    <span class="report-name">{{ report.file_name }}</span>
+                    <span class="report-info">{{ report.created_at }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+            {% else %}
+            <p>暂无报告数据。</p>
+            {% endif %}
+        </div>
+        
+        <!-- 右侧内容区域 -->
+        <div class="content-area" id="contentArea">
+            <div class="welcome-message">
+                <h3>请选择一个报告以查看详情</h3>
+                <p>点击左侧列表中的报告文件名，右侧将显示其详细信息和数据图表。</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 默认选中第一个报告
+        window.onload = function() {
+            const firstReportItem = document.querySelector('.report-item');
+            if (firstReportItem) {
+                loadReportAndHighlight(firstReportItem, firstReportItem.querySelector('.report-name').textContent);
+            }
+        };
+
+        // 高亮选中的报告项
+        function highlightSelectedItem(selectedElement) {
+            // 移除之前选中的项的高亮
+            const previouslyActive = document.querySelector('.report-item.active');
+            if (previouslyActive) {
+                previouslyActive.classList.remove('active');
+            }
+            
+            // 高亮当前选中的项
+            selectedElement.classList.add('active');
+        }
+
+        // 加载报告并高亮选中的项
+        async function loadReportAndHighlight(element, filename) {
+            highlightSelectedItem(element);
+            await loadReport(filename);
+        }
+
+        async function loadReport(filename) {
+            try {
+                // 显示加载指示器
+                document.getElementById('contentArea').innerHTML = '<div class="loading">加载中...</div>';
+                
+                // 发送请求获取报告详情
+                const response = await fetch(`/api/report/${filename}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const reportData = await response.json();
+                
+                // 渲染报告详情
+                renderReportDetail(reportData, filename);
+            } catch (error) {
+                console.error('加载报告详情时出错:', error);
+                document.getElementById('contentArea').innerHTML = `
+                    <div class="error-message">
+                        <h3>加载失败</h3>
+                        <p>无法加载报告详情: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+        
+        function renderReportDetail(data, filename) {
+            // 准备图表数据
+            const flatnessData = data.flatness_data;
+            const labels = flatnessData.map(item => item.holeIndex);
+            const flatnessValues = flatnessData.map(item => item.flatness);
+            
+            // 生成统计信息HTML
+            const statsHtml = `
+                <div class="report-header">
+                    <h2>${filename} - 平整度报告详情</h2>
+                    <a href="/api/report/download/?filename=${encodeURIComponent(filename)}" class="btn btn-download">下载Excel</a>
+                </div>
+                
+                <div class="stats-container">
+                    <div class="stat-item">
+                        <h3>最大值</h3>
+                        <p>${data.statistics.max_value.toFixed(6)}</p>
+                    </div>
+                    <div class="stat-item">
+                        <h3>最小值</h3>
+                        <p>${data.statistics.min_value.toFixed(6)}</p>
+                    </div>
+                    <div class="stat-item">
+                        <h3>峰峰值</h3>
+                        <p>${data.statistics.peak_to_peak.toFixed(6)}</p>
+                    </div>
+                    <div class="stat-item">
+                        <h3>RMS值</h3>
+                        <p>${data.statistics.rms_value.toFixed(6)}</p>
+                    </div>
+                    <div class="stat-item">
+                        <h3>数据点数</h3>
+                        <p>${data.statistics.data_count}</p>
+                    </div>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="flatnessChart"></canvas>
+                </div>
+                
+                <div class="data-table-container">
+                    <h3>平整度数据</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>孔索引</th>
+                                <th>孔角度</th>
+                                <th>平整度</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${flatnessData.map(item => `
+                                <tr>
+                                    <td>${item.holeIndex}</td>
+                                    <td>${item.holeAngle.toFixed(4)}</td>
+                                    <td>${item.flatness.toFixed(4)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+            
+            // 设置内容
+            document.getElementById('contentArea').innerHTML = statsHtml;
+            
+            // 创建图表
+            setTimeout(() => {
+                const ctx = document.getElementById('flatnessChart').getContext('2d');
+                
+                // 重新启用数据点，以便悬停交互
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: '平整度值',  // 这个标签会在图例中显示，但我们将隐藏图例
+                            data: flatnessValues,
+                            borderColor: 'rgb(75, 192, 192)',
+                            backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                            borderWidth: 1,  // 减小线宽至原来的一半
+                            tension: 0.4,    // 增加平滑度
+                            pointRadius: 3,  // 恢复数据点，便于悬停交互
+                            pointHoverRadius: 6,  // 悬停时增大数据点
+                            pointBackgroundColor: 'rgba(75, 192, 192, 0.5)',  // 数据点颜色
+                            pointBorderColor: '#fff',  // 数据点边框色
+                            pointBorderWidth: 1  // 数据点边框宽度
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,  // 允许自定义宽高比
+                        plugins: {
+                            legend: {
+                                display: false  // 隐藏图例（颜色框和标签）
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    // 自定义悬停提示内容
+                                    label: function(context) {
+                                        const index = context.dataIndex;
+                                        const holeIndex = labels[index];
+                                        const flatnessValue = flatnessValues[index];
+                                        return `孔索引: ${holeIndex}, 平整度: ${flatnessValue.toFixed(4)}`;
+                                    }
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: '平整度数据图表'
+                            }
+                        },
+                        scales: {
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: '孔索引'
+                                }
+                            },
+                            y: {
+                                title: {
+                                    display: true,
+                                    text: '平整度值'
+                                }
+                            }
+                        },
+                        interaction: {
+                            intersect: false,  // 鼠标接近线时就触发，不需要精确点击数据点
+                            mode: 'index'     // 鼠标悬停在任意位置时显示最近的数据点信息
+                        }
+                    }
+                });
+            }, 100); // 延迟一点以确保DOM元素已渲染
+        }
+
+        // 搜索过滤功能
+        function filterReports() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toUpperCase();
+            const reportList = document.getElementById('reportList');
+            const reportItems = reportList.getElementsByClassName('report-item');
+
+            for (let i = 0; i < reportItems.length; i++) {
+                const txtValue = reportItems[i].querySelector('.report-name').textContent || reportItems[i].querySelector('.report-name').innerText;
+                if (txtValue.toUpperCase().indexOf(filter) > -1) {
+                    reportItems[i].style.display = '';
+                } else {
+                    reportItems[i].style.display = 'none';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

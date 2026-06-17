@@ -1,0 +1,21 @@
+# 适用于Python 3.8的依赖列表
+blinker==1.7.0          # 支持到Python 3.8
+click==8.1.7            # 支持到Python 3.8
+colorama==0.4.6         # 支持到Python 3.8
+Flask==2.3.3            # 最后支持Python 3.8的版本
+flask-cors==4.0.1       # 支持到Python 3.8
+itsdangerous==2.1.2     # 支持到Python 3.8
+Jinja2==3.1.4           # 支持到Python 3.8
+MarkupSafe==2.1.5       # 支持到Python 3.8
+numpy==1.24.3           # 最后支持Python 3.8的版本
+openpyxl==3.1.2         # 支持到Python 3.8
+paho-mqtt==2.0.0        # 支持到Python 3.8
+pandas==2.0.3           # 最后支持Python 3.8的版本
+pydantic==1.10.13       # Pydantic v1最后支持Python 3.8的版本
+python-dateutil==2.8.2  # 支持到Python 3.8
+pytz==2023.3            # 支持到Python 3.8
+six==1.16.0             # 支持到Python 3.8
+typing_extensions==4.5.0 # 支持到Python 3.8
+Werkzeug==2.3.7         # 最后支持Python 3.8的版本
+et_xmlfile==2.0.0       # 支持到Python 3.8
+python-multipart==0.0.6 # 支持到Python 3.8
