@@ -61,6 +61,14 @@ def create_app():
         response_data = ReportListResponse(reports=file_items)
         return render_template('index.html', reports=response_data.reports)
 
+    @app.route("/image")
+    def serve_image():
+        from flask import send_from_directory
+        import os
+        directory_path = os.path.join(app.static_folder, 'images')
+        filename = 'xy_projection.png'
+        return send_from_directory(directory_path, filename)
+
     # 注册退出时的清理函数
     def shutdown_event():
         logger.info("Shutting down IMM Report API...")
