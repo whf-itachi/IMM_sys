@@ -5,9 +5,8 @@ from datetime import datetime
 from typing import List, Tuple
 import pytz
 from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData       
-
-
 from app.config.app_config import REPORTS_DIR
+
 
 def get_reports_list() -> List[dict]:
     """
@@ -120,8 +119,7 @@ def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
     """
     根据文件名获取平整度数据
     """
-    excel_dir_path = os.getenv('REPORTS_DIR', 'D:/whf_test/report')
-    file_path = os.path.join(excel_dir_path, filename)
+    file_path = os.path.join(REPORTS_DIR, filename)
 
     # 检查文件是否存在
     if not os.path.exists(file_path):

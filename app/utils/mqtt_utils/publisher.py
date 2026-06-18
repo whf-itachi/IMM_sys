@@ -71,7 +71,7 @@ class JetLinksMQTTPublisher:
                 logger.debug(f"Using Custom Signature Auth - ClientID: {client_id}, Username: {username}")
                 # ---
 
-                self._client = mqtt.Client(client_id=client_id)
+                self._client = mqtt.Client(client_id=client_id, callback_api_version=mqtt.CallbackAPIVersion.VERSION1)
 
                 # 设置生成的用户名密码
                 self._client.username_pw_set(username, password)
