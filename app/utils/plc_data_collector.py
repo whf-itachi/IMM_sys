@@ -71,7 +71,7 @@ class PLCDataCollector:
     """
     PLC数据采集器，运行在独立线程中
     """
-    def __init__(self, plc_ip='192.168.3.1', plc_port='4840', scan_interval=2.0):
+    def __init__(self, plc_ip='192.168.3.1', plc_port='4840', scan_interval=2.0, mqtt_publisher=None):
         self.plc_ip = plc_ip
         self.plc_port = plc_port
         self.scan_interval = scan_interval
@@ -79,7 +79,7 @@ class PLCDataCollector:
         self.nodes = {}
         self.running = False
         self.thread = None
-        self.mqtt_publisher = JetLinksMQTTPublisher()
+        self.mqtt_publisher = mqtt_publisher  # 外部传入的MQTT实例
 
         # 定义需要监控的节点
         self.node_definitions = {
@@ -109,12 +109,45 @@ class PLCDataCollector:
             'Peak_Valley': 'ns=3;s="GDB_BladeSettings"."PeakValley"'
         }
 
-    def connect_mqtt(self):
-        """连接到MQTT服务器"""
+    def connect_plc(self):
+        """连接到PLC"""
         try:
-            self.mqtt_publisher.connect()
-            logger.info("成功连接到MQTT服务器")
+            url = f"opc.tcp://{self.plc_ip}:{self.plc_port}"
+            self.client = Client(url)
+            self.client.connect()
+            
+            # 获取所有需要监控的节点
+            for name, node_id in self.node_definitions.items():
+                try:
+                    self.nodes[name] = self.client.get_node(node_id)
+                except Exception as e:
+                    logger.error(f"获取节点 {name} ({node_id}) 失败: {e}")
+            
+            logger.info(f"成功连接到PLC at {url}")
             return True
+        except Exception as e:
+            logger.error(f"连接PLC失败: {e}")
+            return False
+
+    def disconnect_plc(self):
+        """断开PLC连接"""
+        if self.client and self.client.is_connected():
+            self.client.disconnect()
+            logger.info("已断开PLC连接")
+
+    def connect_mqtt(self):
+        """连接到MQTT服务器（使用外部传入的实例）"""
+        try:
+            if self.mqtt_publisher and not self.mqtt_publisher.is_connected:
+                self.mqtt_publisher.connect()
+                logger.info("成功连接到MQTT服务器")
+                return True
+            elif self.mqtt_publisher and self.mqtt_publisher.is_connected:
+                logger.info("MQTT已经连接")
+                return True
+            else:
+                logger.error("MQTT发布器实例为空")
+                return False
         except Exception as e:
             logger.error(f"连接MQTT服务器失败: {e}")
             return False
@@ -129,11 +162,9 @@ class PLCDataCollector:
             }
 
             # 确保MQTT已连接
-            if not self.mqtt_publisher.is_connected:
-                logger.warning("MQTT未连接，正在尝试连接...")
-                if not self.connect_mqtt():
-                    logger.error("无法连接到MQTT服务器")
-                    return False
+            if not self.mqtt_publisher or not self.mqtt_publisher.is_connected:
+                logger.warning("MQTT未连接")
+                return False
 
             # 发布到MQTT主题
             result = self.mqtt_publisher.publish_telemetry(telemetry_data)
@@ -144,6 +175,18 @@ class PLCDataCollector:
 
         except Exception as e:
             logger.error(f"发送数据到物联网平台时出错: {e}")
+
+    def read_plc_data(self):
+        """读取PLC数据"""
+        plc_data = {}
+        for name, node in self.nodes.items():
+            try:
+                value = node.get_value()
+                plc_data[name] = value
+            except Exception as e:
+                logger.error(f"读取节点 {name} 的值失败: {e}")
+        
+        return plc_data
 
     def collect_loop(self):
         """数据采集主循环"""
@@ -176,10 +219,7 @@ class PLCDataCollector:
             logger.error("无法连接到PLC，无法启动采集器")
             return
 
-        # 连接到MQTT
-        if not self.connect_mqtt():
-            logger.error("无法连接到MQTT服务器，无法启动采集器")
-            return
+        # 不再连接MQTT，因为使用的是外部传入的实例
 
         self.running = True
         self.thread = threading.Thread(target=self.collect_loop, daemon=True)
@@ -192,18 +232,44 @@ class PLCDataCollector:
         if self.thread:
             self.thread.join(timeout=5)  # 等待最多5秒让线程结束
         self.disconnect_plc()
-        self.mqtt_publisher.disconnect()
+        # 不再断开MQTT连接，因为那是主应用的责任
         logger.info("PLC数据采集器已停止")
 
 
-    def stop(self):
-        """停止数据采集线程"""
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=5)  # 等待最多5秒让线程结束
-        self.disconnect_plc()
-        self.mqtt_publisher.disconnect()
-        logger.info("PLC数据采集器已停止")
+# 全局实例（将在main.py中初始化）
+plc_collector = None
+
+
+def initialize_plc_collector(mqtt_publisher=None):
+    """初始化PLC数据采集器，接收MQTT发布器实例"""
+    global plc_collector
+    plc_collector = PLCDataCollector(mqtt_publisher=mqtt_publisher)
+    return plc_collector
+
+
+def start_plc_collection():
+    """启动PLC数据采集"""
+    if plc_collector:
+        plc_collector.start()
+    else:
+        logger.error("PLC采集器未初始化")
+
+
+def stop_plc_collection():
+    """停止PLC数据采集"""
+    if plc_collector:
+        plc_collector.stop()
+
+
+# 为了保持向后兼容性，提供一个函数来运行旧的server.py风格的循环
+def run_old_server_style():
+    """
+    此函数是为了向后兼容而保留的，模拟旧的server.py行为
+    但现在推荐使用PLCDataCollector类
+    """
+    print("注意：此函数已过时，建议使用PLCDataCollector类进行数据采集")
+    if plc_collector:
+        plc_collector.start()
 
 
 # 添加来自server.py的数据处理函数

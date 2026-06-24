@@ -3,7 +3,7 @@ from flask_cors import CORS
 import atexit
 from app.utils.logging_config import setup_logger
 from app.utils.mqtt_utils.publisher import JetLinksMQTTPublisher
-from app.utils.plc_data_collector import plc_collector
+from app.utils.plc_data_collector import initialize_plc_collector
 
 # 创建全局logger
 logger = setup_logger()
@@ -21,8 +21,8 @@ def create_app():
     # 将mqtt_publisher存储在应用上下文中
     app.mqtt_publisher = mqtt_publisher
 
-    # 初始化PLC数据采集器
-    app.plc_collector = plc_collector
+    # 初始化PLC数据采集器，传入MQTT发布器实例
+    app.plc_collector = initialize_plc_collector(mqtt_publisher)
 
     # 连接到MQTT代理
     logger.info("Starting up IMM Report API...")
@@ -33,17 +33,17 @@ def create_app():
             logger.info("MQTT publisher initialized and connected successfully")
         else:
             logger.warning("MQTT publisher initialized but not connected")
-            
+
         # 启动PLC数据采集器
         logger.info("Attempting to start PLC data collector...")
         app.plc_collector.start()
         logger.info("PLC data collector started successfully")
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize MQTT publisher or PLC collector: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
-        
+
 
     # 注册API路由
     from app.api.routes import register_routes
@@ -54,7 +54,7 @@ def create_app():
     def index():
         from app.utils.file_operations import get_reports_list
         reports_data = get_reports_list()
-        
+
         # 准备报告数据用于模板
         from app.schemas.report_schemas import ReportListResponse, FileItem
         file_items = []
@@ -67,7 +67,7 @@ def create_app():
                 flatness_count=item['flatness_count']
             )
             file_items.append(file_item)
-        
+
         response_data = ReportListResponse(reports=file_items)
         return render_template('index.html', reports=response_data.reports)
 
