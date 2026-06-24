@@ -53,7 +53,7 @@ MQTT_EVENT_TOPIC_FORMAT = MQTT_EVENT_TOPIC_FORMAT.replace('{CUSTOM_DEVICE_ID}', 
 MQTT_KEEP_ALIVE = config_parser.getint('MQTT', 'KEEP_ALIVE', fallback=60)
 
 # TLS证书路径
-MQTT_CA_CERT_FILE = config_parser.get('MQTT', 'CA_CERT_FILE', fallback='./certs/ca.crt')
+MQTT_CA_CERT_FILE = config_parser.get('MQTT', 'CA_CERT_FILE', fallback='./certs/server.crt')
 
 # 属性映射
 PROPERTY_MAPPING = {}  # 可以添加本地属性到JetLinks平台属性的映射
