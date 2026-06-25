@@ -21,23 +21,33 @@ def create_app():
     # 将mqtt_publisher存储在应用上下文中
     app.mqtt_publisher = mqtt_publisher
 
-    # 初始化PLC数据采集器，传入MQTT发布器实例
-    app.plc_collector = initialize_plc_collector(mqtt_publisher)
+    # 检查是否为 werkzeug 重载进程，只在重载进程中启动后台服务
+    import os
+    from app.config.app_config import DEBUG
+    is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+    is_debug_mode = DEBUG
+    should_start_services = not is_debug_mode or is_reloader_process
+    
+    # 初始化PLC数据采集器，传入MQTT发布器实例，设置采集间隔为5秒
+    app.plc_collector = initialize_plc_collector(mqtt_publisher, scan_interval=5.0)
 
-    # 连接到MQTT代理
+    # 连接到MQTT代理（只在适当的进程中）
     logger.info("Starting up IMM Report API...")
     try:
         logger.info("Attempting to connect to MQTT broker...")
-        app.mqtt_publisher.connect()
-        if app.mqtt_publisher.is_connected:
-            logger.info("MQTT publisher initialized and connected successfully")
-        else:
-            logger.warning("MQTT publisher initialized but not connected")
+        if should_start_services:
+            app.mqtt_publisher.connect()
+            if app.mqtt_publisher.is_connected:
+                logger.info("MQTT publisher initialized and connected successfully")
+            else:
+                logger.warning("MQTT publisher initialized but not connected")
 
-        # 启动PLC数据采集器
-        logger.info("Attempting to start PLC data collector...")
-        app.plc_collector.start()
-        logger.info("PLC data collector started successfully")
+            # 只在适当的进程中启动PLC数据采集器
+            logger.info("Attempting to start PLC data collector...")
+            app.plc_collector.start()
+            logger.info("PLC data collector started successfully")
+        else:
+            logger.info("Skipping MQTT connection and PLC data collector start in main process")
 
     except Exception as e:
         logger.error(f"Failed to initialize MQTT publisher or PLC collector: {e}")
@@ -82,12 +92,22 @@ def create_app():
     # 注册退出时的清理函数
     def shutdown_event():
         logger.info("Shutting down IMM Report API...")
-        # 停止PLC数据采集器
-        app.plc_collector.stop()
-        logger.info("PLC data collector stopped")
-        # 断开MQTT连接
-        app.mqtt_publisher.disconnect()
-        logger.info("MQTT publisher disconnected")
+        # 只在启动了服务的进程中执行清理
+        import os
+        from app.config.app_config import DEBUG
+        is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+        is_debug_mode = DEBUG
+        should_stop_services = not is_debug_mode or is_reloader_process
+        
+        if should_stop_services:
+            # 停止PLC数据采集器
+            app.plc_collector.stop()
+            logger.info("PLC data collector stopped")
+            # 断开MQTT连接
+            app.mqtt_publisher.disconnect()
+            logger.info("MQTT publisher disconnected")
+        else:
+            logger.info("Skipping service cleanup in main process")
 
     atexit.register(shutdown_event)
 
