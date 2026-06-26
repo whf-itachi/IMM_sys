@@ -79,9 +79,6 @@ class PLCDataCollector:
                 logger.error(f"不支持的协议类型: {self.protocol}")
                 return False
 
-        except snap7.snap7exceptions.Snap7Exception as se:
-            logger.error(f"Snap7连接异常: {se}")
-            return False
         except Exception as e:
             logger.error(f"连接PLC失败: {e}")
             import traceback
@@ -120,7 +117,7 @@ class PLCDataCollector:
                 self._previous_active_alarms = set()
 
             current_active_alarms = set(alarm_descriptions)
-            self._previous_active_alarms = set()  # 测试
+            # self._previous_active_alarms = set()  # 测试
             # 只有当报警状态发生变化时才发送事件
             if current_active_alarms != self._previous_active_alarms:
                 # 计算新增的报警和解除的报警

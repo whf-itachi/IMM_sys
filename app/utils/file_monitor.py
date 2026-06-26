@@ -49,14 +49,25 @@ class ReportFileHandler(PatternMatchingEventHandler):
             worksheets_info = get_available_worksheets(filename)
             logger.info(f"文件 {filename} 包含的工作表: {worksheets_info['worksheets']}")
 
+            # 初始化加工前后的数据变量
+            flatness_after_data = None
+            flatness_before_data = None
+
             # 检查是否存在Flatness或FlatnessBefore工作表
             if worksheets_info['has_flatness']:
                 logger.info(f"处理文件 {filename} 的 Flatness 工作表")
+                # 读取数据用于后续结果汇总
+                flatness_after_data = get_flatness_data_by_filename(filename, 'Flatness')
                 self.process_worksheet(filename, 'Flatness', 'after')
 
             if worksheets_info['has_flatness_before']:
                 logger.info(f"处理文件 {filename} 的 FlatnessBefore 工作表")
+                # 读取数据用于后续结果汇总
+                flatness_before_data = get_flatness_data_by_filename(filename, 'FlatnessBefore')
                 self.process_worksheet(filename, 'FlatnessBefore', 'before')
+
+            # 处理平面度测量结果并发送钉钉通知
+            self.process_flatness_results(filename, flatness_after_data, flatness_before_data)
 
         except Exception as e:
             logger.error(f"处理新文件 {filename} 时出错: {str(e)}")
@@ -87,7 +98,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
                     "hole_value": hole_values,
                     "process_stage": process_stage  # 使用process_stage替代worksheet
                 }
-                
+
                 # 发布平面度测量数据事件
                 self.mqtt_publisher.publish_event("flatness_data", event_data)
                 logger.info(f"已发布 {process_stage} 阶段的平面度数据事件，文件: {filename}")
@@ -96,6 +107,54 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
         except Exception as e:
             logger.error(f"处理工作表 {worksheet_name} 时出错: {str(e)}")
+
+    def process_flatness_results(self, filename, flatness_after_data=None, flatness_before_data=None):
+        """
+        处理平面度测量结果并发送钉钉通知
+        """
+        try:
+            # 构建富文本字符串
+            flatness_info_parts = []
+
+            if flatness_before_data:
+                before_stats = flatness_before_data.statistics
+                before_part = (
+                    f"**加工前测量结果**\n"
+                    f"- 最大值: {before_stats.max_value:.6f}\n"
+                    f"- 最小值: {before_stats.min_value:.6f}\n"
+                    f"- 峰峰值: {before_stats.peak_to_peak:.6f}\n"
+                    f"- RMS值: {before_stats.rms_value:.6f}"
+                )
+                flatness_info_parts.append(before_part)
+
+            if flatness_after_data:
+                after_stats = flatness_after_data.statistics
+                after_part = (
+                    f"**加工后测量结果**\n"
+                    f"- 最大值: {after_stats.max_value:.6f}\n"
+                    f"- 最小值: {after_stats.min_value:.6f}\n"
+                    f"- 峰峰值: {after_stats.peak_to_peak:.6f}\n"
+                    f"- RMS值: {after_stats.rms_value:.6f}"
+                )
+                flatness_info_parts.append(after_part)
+
+            # 合并所有部分
+            flatness_info_markdown = "\n\n".join(flatness_info_parts)
+
+            # 发布平面度结果到钉钉通知
+            if self.mqtt_publisher and self.mqtt_publisher.is_connected:
+                flatness_result_data = {
+                    "flatness_info": flatness_info_markdown
+                }
+
+                # 发布平面度结果事件
+                self.mqtt_publisher.publish_event("flatness_report", flatness_result_data)
+                logger.info(f"已发布平面度结果数据事件，文件: {filename}")
+            else:
+                logger.warning(f"MQTT发布器未连接，跳过发布 {filename} 的平面度结果数据")
+
+        except Exception as e:
+            logger.error(f"处理平面度结果 {filename} 时出错: {str(e)}")
 
 
 class FileMonitor:
