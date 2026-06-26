@@ -68,22 +68,26 @@
             await loadReport(filename);
         }
 
-        async function loadReport(filename) {
+        async function loadReport(filename, worksheet = 'Flatness') {
             try {
                 // 显示加载指示器
                 document.getElementById('contentArea').innerHTML = '<div class="loading">加载中...</div>';
-                
+
                 // 发送请求获取报告详情
-                const response = await fetch(`/api/report/${filename}`);
-                
+                const response = await fetch(`/api/report/${filename}?worksheet=${worksheet}`);
+
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                
+
                 const reportData = await response.json();
-                
+
+                // 获取可用的工作表信息
+                const worksheetsResponse = await fetch(`/api/report/worksheets/${filename}`);
+                const worksheetsInfo = await worksheetsResponse.json();
+
                 // 渲染报告详情
-                renderReportDetail(reportData, filename);
+                renderReportDetail(reportData, filename, worksheet, worksheetsInfo);
             } catch (error) {
                 console.error('加载报告详情时出错:', error);
                 document.getElementById('contentArea').innerHTML = `
@@ -95,19 +99,27 @@
             }
         }
         
-        function renderReportDetail(data, filename) {
+        function renderReportDetail(data, filename, currentWorksheet, worksheetsInfo) {
             // 准备图表数据
             const flatnessData = data.flatness_data;
             const labels = flatnessData.map(item => item.holeIndex);
             const flatnessValues = flatnessData.map(item => item.flatness);
-            
+
+            // 根据可用工作表决定按钮状态
+            const flatnessDisabled = worksheetsInfo.has_flatness ? '' : 'disabled';
+            const flatnessBeforeDisabled = worksheetsInfo.has_flatness_before ? '' : 'disabled';
+
             // 生成统计信息HTML
             const statsHtml = `
                 <div class="report-header">
-                    <h2>${filename} - 平整度报告详情</h2>
-                    <a href="/api/report/download/?filename=${encodeURIComponent(filename)}" class="btn btn-download">下载Excel</a>
+                    <h2>${filename} - 平整度报告详情 (${currentWorksheet})</h2>
+                    <div class="button-group">
+                        <button id="btnFlatness" class="btn ${currentWorksheet === 'Flatness' ? 'btn-active' : 'btn-secondary'}" ${flatnessDisabled} onclick="switchWorksheet('${filename}', 'Flatness')">加工后报告</button>
+                        <button id="btnFlatnessBefore" class="btn ${currentWorksheet === 'FlatnessBefore' ? 'btn-active' : 'btn-secondary'}" ${flatnessBeforeDisabled} onclick="switchWorksheet('${filename}', 'FlatnessBefore')">加工前报告</button>
+                        <a href="/api/report/download/?filename=${encodeURIComponent(filename)}" class="btn btn-download">下载Excel</a>
+                    </div>
                 </div>
-                
+
                 <div class="stats-container">
                     <div class="stat-item">
                         <h3>最大值</h3>
@@ -130,11 +142,11 @@
                         <p>${data.statistics.data_count}</p>
                     </div>
                 </div>
-                
+
                 <div class="chart-container">
                     <canvas id="flatnessChart"></canvas>
                 </div>
-                
+
                 <div class="data-table-container">
                     <h3>平整度数据</h3>
                     <table class="data-table">
@@ -157,14 +169,14 @@
                     </table>
                 </div>
             `;
-            
+
             // 设置内容
             document.getElementById('contentArea').innerHTML = statsHtml;
-            
+
             // 创建图表
             setTimeout(() => {
                 const ctx = document.getElementById('flatnessChart').getContext('2d');
-                
+
                 // 重新启用数据点，以便悬停交互
                 new Chart(ctx, {
                     type: 'line',
@@ -228,6 +240,11 @@
                     }
                 });
             }, 100); // 延迟一点以确保DOM元素已渲染
+        }
+
+        // 切换工作表
+        async function switchWorksheet(filename, worksheet) {
+            await loadReport(filename, worksheet);
         }
 
         // 搜索过滤功能

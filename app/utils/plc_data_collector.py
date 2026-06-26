@@ -129,7 +129,8 @@ class PLCDataCollector:
 
                 # 创建报警事件数据 - 发送当前所有激活的报警
                 alarm_event_data = {
-                    "alarms": list(current_active_alarms)
+                    "alarms": list(current_active_alarms),
+                    # "alarm_names": "告警日志测试内容"
                 }
 
                 # 发送报警事件

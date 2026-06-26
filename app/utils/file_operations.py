@@ -60,14 +60,21 @@ def get_reports_list() -> List[dict]:
     return data
 
 
-def read_flatness_measure_data(file_path: str) -> Tuple[pd.DataFrame, dict]:
+def read_flatness_measure_data(file_path: str, worksheet_name: str = 'Flatness') -> Tuple[pd.DataFrame, dict]:
     """
     读取平面度报告Excel文件中的测量数据
     """
     try:
         # 加载工作簿
         wb = openpyxl.load_workbook(filename=file_path, data_only=True)
-        ws = wb.worksheets[0]  # 获取第一个工作表
+        
+        # 检查指定的工作表是否存在
+        if worksheet_name in wb.sheetnames:
+            ws = wb[worksheet_name]
+        else:
+            # 如果指定的工作表不存在，尝试使用默认的第一个工作表
+            ws = wb.worksheets[0]
+            print(f"警告: 工作表 '{worksheet_name}' 不存在，使用默认工作表 '{ws.title}'")
 
         # 读取报告基本信息
         report_info = {
@@ -115,7 +122,7 @@ def read_flatness_measure_data(file_path: str) -> Tuple[pd.DataFrame, dict]:
         raise Exception(f"读取Excel文件时发生错误: {str(e)}")
 
 
-def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
+def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness') -> FlatnessResponse:
     """
     根据文件名获取平整度数据
     """
@@ -130,7 +137,7 @@ def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
         raise ValueError(f"文件不是有效的Excel文件: {filename}")
 
     # 读取Excel文件数据
-    measure_df, report_info = read_flatness_measure_data(file_path)
+    measure_df, report_info = read_flatness_measure_data(file_path, worksheet_name)
 
     if measure_df is None or report_info is None:
         raise Exception("无法读取Excel文件数据")
@@ -144,7 +151,7 @@ def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
     if report_time_str:
         try:
             # 尝试解析报告时间字符串
-            if isinstance(report_time_str, datetime):       
+            if isinstance(report_time_str, datetime):
                 report_created_at = report_time_str
             else:
                 # 假设格式为"YYYY-MM-DD HH:MM"
@@ -192,7 +199,7 @@ def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
 
     flatness_data = [
         FlatnessData(
-            holeIndex=int(row['Index']) if row['Index'] is not None else 0,  # 叶片孔的排序信息    
+            holeIndex=int(row['Index']) if row['Index'] is not None else 0,  # 叶片孔的排序信息
             holeAngle=float(row['Angle']),
             flatness=float(row['A'])
         ) for _, row in measure_df.iterrows()
@@ -205,3 +212,36 @@ def get_flatness_data_by_filename(filename: str) -> FlatnessResponse:
         statistics=statistics,
         flatness_data=flatness_data
     )
+
+
+def get_available_worksheets(filename: str) -> dict:
+    """
+    获取Excel文件中可用的工作表名称
+    """
+    file_path = os.path.join(REPORTS_DIR, filename)
+
+    # 检查文件是否存在
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    # 检查文件是否为Excel文件
+    if not filename.endswith(('.xlsx', '.xls')):
+        raise ValueError(f"文件不是有效的Excel文件: {filename}")
+
+    try:
+        # 加载工作簿
+        wb = openpyxl.load_workbook(filename=file_path, data_only=True)
+        
+        # 获取所有工作表名称
+        worksheets = wb.sheetnames
+        
+        # 关闭工作簿
+        wb.close()
+        
+        return {
+            'worksheets': worksheets,
+            'has_flatness': 'Flatness' in worksheets,
+            'has_flatness_before': 'FlatnessBefore' in worksheets
+        }
+    except Exception as e:
+        raise Exception(f"读取Excel文件工作表时发生错误: {str(e)}")

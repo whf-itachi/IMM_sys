@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from app.schemas.report_schemas import ReportListResponse, FileItem
-from app.utils.file_operations import get_reports_list, get_flatness_data_by_filename
+from app.utils.file_operations import get_reports_list, get_flatness_data_by_filename, get_available_worksheets
 from app.utils.logging_config import setup_logger
 
 bp = Blueprint('reports', __name__)
@@ -51,8 +51,11 @@ def flatness_report_detail_api(filename):
         logger.warning("文件名参数为空")
         return jsonify({"detail": "文件名参数不能为空"}), 400
 
+    # 从查询参数获取工作表名称，默认为 'Flatness'
+    worksheet_name = request.args.get('worksheet', 'Flatness')
+
     try:
-        result = get_flatness_data_by_filename(filename)
+        result = get_flatness_data_by_filename(filename, worksheet_name)
 
         # 发布遥测数据到MQTT
         try:
@@ -60,7 +63,7 @@ def flatness_report_detail_api(filename):
             # 修复：使用current_app访问mqtt_publisher
             mqtt_publisher = current_app.mqtt_publisher
             logger.info(f"MQTT publisher retrieved, connected: {mqtt_publisher.is_connected if mqtt_publisher else 'None'}")
-            
+
             if mqtt_publisher and mqtt_publisher.is_connected:
                 logger.info("进入到事件处理逻辑")
                 # 准备孔角度和孔测量值数组
@@ -76,7 +79,8 @@ def flatness_report_detail_api(filename):
                     "pv_value": result.statistics.peak_to_peak,
                     "rms": result.statistics.rms_value,
                     "hole_angle": hole_angles,
-                    "hole_value": hole_values
+                    "hole_value": hole_values,
+                    "worksheet": worksheet_name  # 添加工作表名称信息
                 }
                 logger.info(str(event_data))
                 # 发布平面度测量数据事件
@@ -93,6 +97,34 @@ def flatness_report_detail_api(filename):
             logger.error(f"Full traceback: {traceback.format_exc()}")
 
         return jsonify(result.dict())
+
+    except FileNotFoundError:
+        logger.error(f"文件不存在: {filename}")
+        return jsonify({"detail": f'文件"{filename}"不存在'}), 404
+
+    except ValueError as ve:
+        logger.error(f"文件处理错误: {str(ve)}")
+        return jsonify({"detail": str(ve)}), 400
+
+    except Exception as e:
+        logger.error(f"服务器错误: {str(e)}")
+        return jsonify({"detail": f'服务器错误: {str(e)}'}), 500
+
+
+@bp.route('/worksheets/<filename>', methods=['GET'])
+def get_worksheets_api(filename):
+    """
+    获取Excel文件中可用的工作表名称
+    """
+    logger.info(f"获取文件 {filename} 的工作表列表")
+
+    if not filename:
+        logger.warning("文件名参数为空")
+        return jsonify({"detail": "文件名参数不能为空"}), 400
+
+    try:
+        worksheets_info = get_available_worksheets(filename)
+        return jsonify(worksheets_info)
 
     except FileNotFoundError:
         logger.error(f"文件不存在: {filename}")
