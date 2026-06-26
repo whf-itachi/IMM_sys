@@ -5,7 +5,7 @@ from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
 
 from app.config.app_config import REPORTS_DIR
-from app.utils.file_operations import get_available_worksheets, get_flatness_data_by_filename
+from app.utils.file_operations import get_available_worksheets, get_flatness_data_by_filename, get_blade_result_data
 from app.utils.logging_config import setup_logger
 
 
@@ -110,7 +110,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
     def process_flatness_results(self, filename, flatness_after_data=None, flatness_before_data=None):
         """
-        处理平面度测量结果并发送钉钉通知
+        处理叶片加工结果并发送钉钉通知
         """
         try:
             # 构建富文本字符串
@@ -119,7 +119,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
             if flatness_before_data:
                 before_stats = flatness_before_data.statistics
                 before_part = (
-                    f"**加工前测量结果**\n"
+                    f"**加工前平面度测量结果**\n"
                     f"- 最大值: {before_stats.max_value:.6f}\n"
                     f"- 最小值: {before_stats.min_value:.6f}\n"
                     f"- 峰峰值: {before_stats.peak_to_peak:.6f}\n"
@@ -130,7 +130,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
             if flatness_after_data:
                 after_stats = flatness_after_data.statistics
                 after_part = (
-                    f"**加工后测量结果**\n"
+                    f"**加工后平面度测量结果**\n"
                     f"- 最大值: {after_stats.max_value:.6f}\n"
                     f"- 最小值: {after_stats.min_value:.6f}\n"
                     f"- 峰峰值: {after_stats.peak_to_peak:.6f}\n"
@@ -140,15 +140,54 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
             # 合并所有部分
             flatness_info_markdown = "\n\n".join(flatness_info_parts)
+            
+            # 获取BladeResult工作表中的加工信息
+            blade_result_info = get_blade_result_data(filename)
+            
+            # 构建加工信息的富文本字符串
+            if blade_result_info:
+                # 处理总时长，如果存在则加上单位"分钟"并转换为整数
+                total_duration = blade_result_info.get('total_duration', '')
+                if total_duration is not None and total_duration != '':
+                    try:
+                        total_duration_int = int(float(total_duration))  # 先转为浮点数再转为整数，处理可能的字符串数字
+                        total_duration_display = f"{total_duration_int} 分钟"
+                    except (ValueError, TypeError):
+                        total_duration_display = f"{total_duration} 分钟"  # 如果转换失败，保持原样
+                else:
+                    total_duration_display = ""
+
+                process_info_markdown = (
+                    f"**加工信息统计**\n"
+                    f"- 叶片ID: {blade_result_info.get('blade_id', '')}\n"
+                    f"- 铣磨圈数: {blade_result_info.get('mill_circle_count', '')}\n"
+                    f"- 铣磨深度: {blade_result_info.get('mill_depth', '')}\n"
+                    f"- 加工开始时间: {blade_result_info.get('start_time', '')}\n"
+                    f"- 加工结束时间: {blade_result_info.get('end_time', '')}\n"
+                    f"- 总时长: {total_duration_display}\n"
+                )
+            else:
+                process_info_markdown = ""
+            
+            # 获取叶片名称 - 从flatness_after_data或flatness_before_data或blade_result_info中获取
+            blade_name = ''
+            if flatness_after_data:
+                blade_name = flatness_after_data.report.bladeId
+            elif flatness_before_data:
+                blade_name = flatness_before_data.report.bladeId
+            elif blade_result_info and blade_result_info.get('blade_id'):
+                blade_name = blade_result_info.get('blade_id', '')
 
             # 发布平面度结果到钉钉通知
             if self.mqtt_publisher and self.mqtt_publisher.is_connected:
                 flatness_result_data = {
-                    "flatness_info": flatness_info_markdown
+                    "blade_name": blade_name,
+                    "flatness_info": flatness_info_markdown,
+                    "process_info": process_info_markdown
                 }
 
                 # 发布平面度结果事件
-                self.mqtt_publisher.publish_event("flatness_report", flatness_result_data)
+                self.mqtt_publisher.publish_event("process_result", flatness_result_data)
                 logger.info(f"已发布平面度结果数据事件，文件: {filename}")
             else:
                 logger.warning(f"MQTT发布器未连接，跳过发布 {filename} 的平面度结果数据")

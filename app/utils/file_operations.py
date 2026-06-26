@@ -242,9 +242,55 @@ def get_available_worksheets(filename: str) -> dict:
         return {
             'worksheets': worksheets,
             'has_flatness': 'Flatness' in worksheets,
-            'has_flatness_before': 'FlatnessBefore' in worksheets
+            'has_flatness_before': 'FlatnessBefore' in worksheets,
+            'has_blade_result': 'BladeResult' in worksheets
         }
     except zipfile.BadZipFile:
         raise Exception(f"文件不是有效的Excel文件: 文件可能已损坏或不是.xlsx格式")
     except Exception as e:
         raise Exception(f"读取Excel文件工作表时发生错误: {str(e)}")
+
+
+def get_blade_result_data(filename: str) -> dict:
+    """
+    从Excel文件的BladeResult工作表中获取加工信息
+    """
+    file_path = os.path.join(REPORTS_DIR, filename)
+
+    # 检查文件是否存在
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    # 检查文件是否为Excel文件
+    if not filename.endswith(('.xlsx', '.xls')):
+        raise ValueError(f"文件不是有效的Excel文件: {filename}")
+
+    try:
+        # 加载工作簿
+        wb = openpyxl.load_workbook(filename=file_path, data_only=True)
+        
+        # 检查是否存在BladeResult工作表
+        if 'BladeResult' not in wb.sheetnames:
+            wb.close()
+            return {}  # 如果没有BladeResult工作表，则返回空字典
+
+        ws = wb['BladeResult']
+
+        # 从BladeResult工作表中读取加工信息
+        # 根据常见Excel布局，重新调整单元格位置
+        blade_info = {
+            'blade_id': ws["B2"].value if ws["B2"].value else ws["A2"].value,  # 叶片ID
+            'mill_circle_count': ws["B20"].value,  # 铣磨圈数 (通常在B3)
+            'mill_depth': ws["B19"].value,  # 铣磨深度 (通常在B4)
+            'start_time': ws["B4"].value,  # 加工开始时间
+            'end_time': ws["B5"].value,   # 加工结束时间
+            'total_duration': ws["B6"].value  # 总时长
+        }
+
+        # 关闭工作簿
+        wb.close()
+
+        return blade_info
+
+    except Exception as e:
+        raise Exception(f"读取BladeResult工作表时发生错误: {str(e)}")

@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 
 from app.schemas.report_schemas import ReportListResponse, FileItem
-from app.utils.file_operations import get_reports_list, get_flatness_data_by_filename, get_available_worksheets
+from app.utils.file_operations import get_reports_list, get_flatness_data_by_filename, get_available_worksheets, get_blade_result_data
 from app.utils.logging_config import setup_logger
 
 bp = Blueprint('reports', __name__)
