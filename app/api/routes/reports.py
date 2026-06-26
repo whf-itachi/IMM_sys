@@ -80,7 +80,7 @@ def flatness_report_detail_api(filename):
                 }
                 logger.info(str(event_data))
                 # 发布平面度测量数据事件
-                mqtt_publisher.publish_flatness_data_event(event_data)
+                mqtt_publisher.publish_event("flatness_data", event_data)
                 logger.info(f"Published flatness data event for file {filename} to MQTT")
             else:
                 logger.warning(f"MQTT publisher is not available or not connected for file {filename}")

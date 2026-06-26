@@ -1,8 +1,8 @@
 import time
 import threading
 import snap7
-import os
 from app.utils.logging_config import setup_logger
+from app.utils.plc_alarm_parser import ALARM_MAPPING_DICT
 
 logger = setup_logger()
 
@@ -112,29 +112,44 @@ class PLCDataCollector:
             logger.error(f"连接MQTT服务器失败: {e}")
             return False
 
-    def send_data_to_iot_platform(self, data):
-        """将数据发送到物联网平台"""
+    def send_alarm_events(self, alarm_indices):
+        """发送报警事件到物联网平台"""
         try:
-            # 格式化数据为适合物联网平台传输的格式
-            telemetry_data = {
-                "timestamp": time.time(),
-                "alarm_data": data
-            }
+            # 检查是否有报警状态变化
+            if not hasattr(self, '_previous_active_alarms'):
+                self._previous_active_alarms = set()
 
-            # 确保MQTT已连接
-            if not self.mqtt_publisher or not self.mqtt_publisher.is_connected:
-                logger.warning("MQTT未连接")
-                return False
+            current_active_alarms = set(alarm_indices)
 
-            # 发布到MQTT主题
-            result = self.mqtt_publisher.publish_telemetry(telemetry_data)
-            if result:
-                logger.info("报警数据成功发送到物联网平台")
+            # 只有当报警状态发生变化时才发送事件
+            if current_active_alarms != self._previous_active_alarms:
+                # 计算新增的报警和解除的报警
+                new_alarms = current_active_alarms - self._previous_active_alarms
+                resolved_alarms = self._previous_active_alarms - current_active_alarms
+
+                # 创建报警事件数据 - 发送当前所有激活的报警
+                alarm_event_data = {
+                    "alarms": list(current_active_alarms)
+                }
+
+                # 发送报警事件
+                result = self.mqtt_publisher.publish_event("alarm_log", alarm_event_data)
+                if result:
+                    if new_alarms:
+                        logger.info(f"新增报警: {sorted(list(new_alarms))}")
+                    if resolved_alarms:
+                        logger.info(f"解除报警: {sorted(list(resolved_alarms))}")
+                    logger.info(f"报警事件成功发送到物联网平台: {sorted(list(current_active_alarms))}")
+                else:
+                    logger.error(f"发送报警事件到物联网平台失败: {sorted(list(current_active_alarms))}")
+
+                # 更新上一次的报警状态
+                self._previous_active_alarms = current_active_alarms
             else:
-                logger.error("发送报警数据到物联网平台失败")
+                logger.debug("报警状态无变化，跳过发送事件")
 
         except Exception as e:
-            logger.error(f"发送数据到物联网平台时出错: {e}")
+            logger.error(f"发送报警事件到物联网平台时出错: {e}")
 
     def read_plc_data(self):
         """读取PLC报警数据"""
@@ -150,8 +165,8 @@ class PLCDataCollector:
             logger.error(f"不支持的协议类型: {self.protocol}")
             return {}
 
-    def read_alarm_data(self):
-        """读取报警数据块(DB2)"""
+    def read_raw_alarm_data(self):
+        """读取原始报警数据块(DB2)"""
         try:
             # 读取GDB_Errors数据块(DB2)，总共52字节
             # 即使我们只解析前16字节（ErrWord0-ErrWord7），仍需读取完整数据块以确保数据完整性
@@ -160,72 +175,86 @@ class PLCDataCollector:
             # 记录原始字节信息到日志（包括十六进制和二进制表示）
             hex_repr = [hex(b) for b in alarm_bytes]
             bin_repr = [format(b, '08b') for b in alarm_bytes]
-            
+
             logger.info(f"从PLC读取的原始字节 (前16字节十六进制): {hex_repr[:16]}")
             logger.info(f"从PLC读取的原始字节 (前16字节二进制): {bin_repr[:16]}")
-            
-            # 记录ErrWord的解析（使用大端序）
-            logger.info("=== ErrWord解析（使用大端序）===")
-            for i in range(min(len(alarm_bytes)//2, 8)):  # 最多8个ErrWord
-                first_byte = alarm_bytes[i*2] if i*2 < len(alarm_bytes) else 0
-                second_byte = alarm_bytes[i*2+1] if i*2+1 < len(alarm_bytes) else 0
-                word_value = (first_byte << 8) | second_byte  # 大端序
-                logger.info(f"  ErrWord{i} (字节{i*2}-{i*2+1}): 0x{word_value:04X} = {format(word_value, '016b')}")
-                # 详细显示位状态
-                bits_on = []
-                for j in range(16):
-                    if (word_value >> j) & 1:
-                        bits_on.append(str(j))
-                if bits_on:
-                    logger.info(f"    激活的位: [{', '.join(bits_on)}]")
 
-            # 使用新的解析方法（基于alarms.log文件定义）
-            from app.utils.plc_alarm_parser import parse_alarm_bytes
-            parsed_alarms = parse_alarm_bytes(alarm_bytes)
-
-            # 打印到控制台（开发阶段每次都显示）
-            print("=== 解析后的报警数据 ===")
-            from app.utils.plc_alarm_parser import print_parsed_alarms
-            print_parsed_alarms(parsed_alarms)
-
-            # 记录解析结果到日志，记录所有激活的报警
-            active_alarms = []
-            for category, data in parsed_alarms.items():
-                if category.endswith('Alarms'):
-                    for alarm_name, alarm_info in data.items():
-                        if alarm_info['active']:
-                            active_alarms.append(f"{alarm_name}({alarm_info['description']})")
-                elif category == 'UndefinedBits':
-                    # 记录未定义的位
-                    if data:
-                        # 将未定义的位也加入到活动报警列表中，以便在摘要中显示
-                        for bit_info in data:
-                            active_alarms.append(f"UndefinedBit_ErrWord{bit_info['word_index']}_Pos{bit_info['bit_position']}")
-            
-            # 记录所有激活的报警
-            if active_alarms:
-                logger.warning(f"检测到激活的报警: {', '.join(active_alarms)}")
-            else:
-                logger.info("未检测到激活的报警")
-
-            return parsed_alarms
+            return alarm_bytes
         except Exception as e:
-            logger.error(f"读取报警数据失败: {e}")
+            logger.error(f"读取原始报警数据失败: {e}")
             import traceback
-            logger.error(f"读取报警数据完整错误堆栈: {traceback.format_exc()}")
-            return {}
+            logger.error(f"读取原始报警数据完整错误堆栈: {traceback.format_exc()}")
+            return []
+
+    def get_activated_bits(self, alarm_bytes):
+        """获取激活的位信息，返回格式为[(ErrWord_index, bit_position), ...]"""
+        activated_bits = []
+        
+        # 记录ErrWord的解析（使用大端序）
+        logger.info("=== ErrWord解析（使用大端序）===")
+        for i in range(min(len(alarm_bytes)//2, 8)):  # 最多8个ErrWord
+            first_byte = alarm_bytes[i*2] if i*2 < len(alarm_bytes) else 0
+            second_byte = alarm_bytes[i*2+1] if i*2+1 < len(alarm_bytes) else 0
+            word_value = (first_byte << 8) | second_byte  # 大端序
+            logger.info(f"  ErrWord{i} (字节{i*2}-{i*2+1}): 0x{word_value:04X} = {format(word_value, '016b')}")
+            
+            # 详细显示位状态
+            # 对于16位的word，位编号从右往左数（标准位编号方式，LSB=0）
+            # 例如: 0x0880 = 0000100010000000
+            # 位编号(右->左): FEDCBA9876543210 (十六进制表示)
+            #                1111111111000000
+            #                5432109876543210
+            # 从右边第一位开始编号，即LSB为0
+            # 在大端序下，ErrWord = (byte0 << 8) | byte1
+            # 所以，byte0的bit7 对应 ErrWord的bit15 (最高位)
+            #      byte0的bit0 对应 ErrWord的bit8
+            #      byte1的bit7 对应 ErrWord的bit7
+            #      byte1的bit0 对应 ErrWord的bit0 (最低位)
+            for bit_pos in range(16):
+                # 检查从右往左的第bit_pos位是否为1（标准位编号方式）
+                if (word_value >> bit_pos) & 1:
+                    activated_bits.append((i, bit_pos))
+                    
+        logger.info(f"激活的位: {activated_bits}")
+        return activated_bits
+
+    def get_alarm_indices_from_bits(self, activated_bits):
+        """根据激活的位信息查询ALARM_MAPPING_DICT，返回对应的报警索引列表"""
+        alarm_indices = []
+        
+        for word_idx, bit_pos in activated_bits:
+            # 检查ErrWord索引是否在ALARM_MAPPING_DICT中存在
+            if word_idx in ALARM_MAPPING_DICT:
+                # 检查该位是否在映射字典中定义
+                if bit_pos in ALARM_MAPPING_DICT[word_idx]:
+                    alarm_idx = ALARM_MAPPING_DICT[word_idx][bit_pos]
+                    alarm_indices.append(alarm_idx)
+                    logger.info(f"ErrWord{word_idx}的第{bit_pos}位对应报警索引: {alarm_idx}")
+                else:
+                    logger.warning(f"ErrWord{word_idx}的第{bit_pos}位未在ALARM_MAPPING_DICT中定义")
+            else:
+                logger.warning(f"ErrWord{word_idx}未在ALARM_MAPPING_DICT中定义")
+        
+        logger.info(f"查询到的报警索引: {alarm_indices}")
+        return alarm_indices
 
     def collect_loop(self):
         """数据采集主循环"""
         logger.info("开始报警数据采集循环")
-        
+
         while self.running_event.is_set():
             try:
-                # 读取报警数据
-                alarm_data = self.read_plc_data()
+                # 读取PLC原始报警数据（字节数组）
+                raw_alarm_data = self.read_raw_alarm_data()
 
-                # 发送数据到物联网平台
-                self.send_data_to_iot_platform(alarm_data)
+                # 第一步：获取告警的数据，有哪些字节组的哪些比特位值为1
+                activated_bits = self.get_activated_bits(raw_alarm_data)
+                
+                # 第二步：在ALARM_MAPPING_DICT查询该值对应的索引值为多少并返回为数组
+                alarm_indices = self.get_alarm_indices_from_bits(activated_bits)
+                
+                # 第三步：调用mqtt方法发送事件到物联网平台
+                self.send_alarm_events(alarm_indices)
 
                 # 等待下一个采集周期
                 time.sleep(self.scan_interval)

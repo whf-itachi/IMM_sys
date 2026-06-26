@@ -259,12 +259,12 @@ class JetLinksMQTTPublisher:
             logger.error(f"Publish telemetry unknown error: {e}", exc_info=True)
             return False
 
-    def publish_flatness_data_event(self, event_data: dict) -> bool:
-        """上报平面度事件消息"""
+    def publish_event(self, event_name: str, event_data: dict) -> bool:
+        """上报通用事件消息"""
         if not self._is_connected():
-            logger.error("MQTT client not connected, skip event publish")
+            logger.error(f"MQTT client not connected, skip {event_name} event publish")
             return False
-            
+
         try:
             standard_payload = {
                 "messageId": str(uuid.uuid4()),
@@ -272,7 +272,7 @@ class JetLinksMQTTPublisher:
                 "data": event_data
             }
             payload_json = json.dumps(standard_payload, ensure_ascii=False)
-            topic = MQTT_EVENT_TOPIC_FORMAT.format(event_id='flatness_data')
+            topic = MQTT_EVENT_TOPIC_FORMAT.format(event_id=event_name)
 
             logger.info(f"Event topic: {topic}, payload: {payload_json}")
             pub_result = self._client.publish(topic, payload_json, qos=1)
@@ -280,16 +280,16 @@ class JetLinksMQTTPublisher:
 
             logger.info(f"Publish result rc={pub_result.rc}, mid={pub_result.mid}")
             if pub_result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"Flatness event queued success, mid={pub_result.mid}")
+                logger.info(f"{event_name} event queued success, mid={pub_result.mid}")
                 return True
             else:
-                logger.error(f"Flatness event publish failed, rc={pub_result.rc}")
+                logger.error(f"{event_name} event publish failed, rc={pub_result.rc}")
                 return False
         except (TypeError, ValueError) as e:
-            logger.error(f"Serialize event json error: {e}, data={event_data}")
+            logger.error(f"Serialize {event_name} event json error: {e}, data={event_data}")
             return False
         except Exception as e:
-            logger.error(f"Publish flatness event unknown error: {e}", exc_info=True)
+            logger.error(f"Publish {event_name} event unknown error: {e}", exc_info=True)
             return False
 
     def _is_connected(self) -> bool:
