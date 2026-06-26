@@ -1,10 +1,11 @@
 import os
 import pandas as pd
 import openpyxl
+import zipfile
 from datetime import datetime
 from typing import List, Tuple
 import pytz
-from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData       
+from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData
 from app.config.app_config import REPORTS_DIR
 
 
@@ -243,5 +244,7 @@ def get_available_worksheets(filename: str) -> dict:
             'has_flatness': 'Flatness' in worksheets,
             'has_flatness_before': 'FlatnessBefore' in worksheets
         }
+    except zipfile.BadZipFile:
+        raise Exception(f"文件不是有效的Excel文件: 文件可能已损坏或不是.xlsx格式")
     except Exception as e:
         raise Exception(f"读取Excel文件工作表时发生错误: {str(e)}")

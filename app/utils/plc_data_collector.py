@@ -112,25 +112,27 @@ class PLCDataCollector:
             logger.error(f"连接MQTT服务器失败: {e}")
             return False
 
-    def send_alarm_events(self, alarm_indices):
+    def send_alarm_events(self, alarm_descriptions):
         """发送报警事件到物联网平台"""
         try:
             # 检查是否有报警状态变化
             if not hasattr(self, '_previous_active_alarms'):
                 self._previous_active_alarms = set()
 
-            current_active_alarms = set(alarm_indices)
-
+            current_active_alarms = set(alarm_descriptions)
+            self._previous_active_alarms = set()  # 测试
             # 只有当报警状态发生变化时才发送事件
             if current_active_alarms != self._previous_active_alarms:
                 # 计算新增的报警和解除的报警
                 new_alarms = current_active_alarms - self._previous_active_alarms
                 resolved_alarms = self._previous_active_alarms - current_active_alarms
 
+                # 将报警描述转换为markdown格式的富文本字符串
+                alarms_markdown = "\n".join([f"- {desc}" for desc in sorted(current_active_alarms)])
+
                 # 创建报警事件数据 - 发送当前所有激活的报警
                 alarm_event_data = {
-                    "alarms": list(current_active_alarms),
-                    # "alarm_names": "告警日志测试内容"
+                    "alarms": alarms_markdown
                 }
 
                 # 发送报警事件
@@ -219,25 +221,25 @@ class PLCDataCollector:
         logger.info(f"激活的位: {activated_bits}")
         return activated_bits
 
-    def get_alarm_indices_from_bits(self, activated_bits):
-        """根据激活的位信息查询ALARM_MAPPING_DICT，返回对应的报警索引列表"""
-        alarm_indices = []
-        
+    def get_alarm_descriptions_from_bits(self, activated_bits):
+        """根据激活的位信息查询ALARM_MAPPING_DICT，返回对应的报警描述列表"""
+        alarm_descriptions = []
+
         for word_idx, bit_pos in activated_bits:
             # 检查ErrWord索引是否在ALARM_MAPPING_DICT中存在
             if word_idx in ALARM_MAPPING_DICT:
                 # 检查该位是否在映射字典中定义
                 if bit_pos in ALARM_MAPPING_DICT[word_idx]:
-                    alarm_idx = ALARM_MAPPING_DICT[word_idx][bit_pos]
-                    alarm_indices.append(alarm_idx)
-                    logger.info(f"ErrWord{word_idx}的第{bit_pos}位对应报警索引: {alarm_idx}")
+                    alarm_desc = ALARM_MAPPING_DICT[word_idx][bit_pos]
+                    alarm_descriptions.append(alarm_desc)
+                    logger.info(f"ErrWord{word_idx}的第{bit_pos}位对应报警描述: {alarm_desc}")
                 else:
                     logger.warning(f"ErrWord{word_idx}的第{bit_pos}位未在ALARM_MAPPING_DICT中定义")
             else:
                 logger.warning(f"ErrWord{word_idx}未在ALARM_MAPPING_DICT中定义")
-        
-        logger.info(f"查询到的报警索引: {alarm_indices}")
-        return alarm_indices
+
+        logger.info(f"查询到的报警描述: {alarm_descriptions}")
+        return alarm_descriptions
 
     def collect_loop(self):
         """数据采集主循环"""
@@ -250,12 +252,12 @@ class PLCDataCollector:
 
                 # 第一步：获取告警的数据，有哪些字节组的哪些比特位值为1
                 activated_bits = self.get_activated_bits(raw_alarm_data)
-                
-                # 第二步：在ALARM_MAPPING_DICT查询该值对应的索引值为多少并返回为数组
-                alarm_indices = self.get_alarm_indices_from_bits(activated_bits)
-                
+
+                # 第二步：在ALARM_MAPPING_DICT查询该值对应的报警描述并返回为数组
+                alarm_descriptions = self.get_alarm_descriptions_from_bits(activated_bits)
+
                 # 第三步：调用mqtt方法发送事件到物联网平台
-                self.send_alarm_events(alarm_indices)
+                self.send_alarm_events(alarm_descriptions)
 
                 # 等待下一个采集周期
                 time.sleep(self.scan_interval)
