@@ -1,9 +1,11 @@
 from flask import Flask, render_template
 from flask_cors import CORS
 import atexit
+import traceback
 from app.utils.logging_config import setup_logger
 from app.utils.mqtt_utils.publisher import JetLinksMQTTPublisher
 from app.utils.plc_data_collector import initialize_plc_collector
+from app.utils.file_monitor import FileMonitor
 
 # 创建全局logger
 logger = setup_logger()
@@ -89,6 +91,10 @@ def create_app():
         filename = 'xy_projection.png'
         return send_from_directory(directory_path, filename)
 
+    # 初始化文件监控器
+    file_monitor = FileMonitor(app.mqtt_publisher)
+    app.file_monitor = file_monitor
+
     # 注册退出时的清理函数
     def shutdown_event():
         logger.info("Shutting down IMM Report API...")
@@ -98,11 +104,16 @@ def create_app():
         is_reloader_process = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
         is_debug_mode = DEBUG
         should_stop_services = not is_debug_mode or is_reloader_process
-        
+
         if should_stop_services:
             # 停止PLC数据采集器
             app.plc_collector.stop()
             logger.info("PLC data collector stopped")
+            
+            # 停止文件监控器
+            app.file_monitor.stop()
+            logger.info("File monitor stopped")
+            
             # 断开MQTT连接
             app.mqtt_publisher.disconnect()
             logger.info("MQTT publisher disconnected")
@@ -110,5 +121,17 @@ def create_app():
             logger.info("Skipping service cleanup in main process")
 
     atexit.register(shutdown_event)
+
+    # 启动文件监控器（只在适当的进程中）
+    try:
+        if should_start_services:
+            app.file_monitor.start()
+            logger.info("File monitor started successfully")
+        else:
+            logger.info("Skipping file monitor start in main process")
+    except Exception as e:
+        logger.error(f"Failed to start file monitor: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
 
     return app

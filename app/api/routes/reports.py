@@ -57,45 +57,6 @@ def flatness_report_detail_api(filename):
     try:
         result = get_flatness_data_by_filename(filename, worksheet_name)
 
-        # 发布遥测数据到MQTT
-        try:
-            logger.info(f"Attempting to access MQTT publisher for file {filename}")
-            # 修复：使用current_app访问mqtt_publisher
-            mqtt_publisher = current_app.mqtt_publisher
-            logger.info(f"MQTT publisher retrieved, connected: {mqtt_publisher.is_connected if mqtt_publisher else 'None'}")
-
-            if mqtt_publisher and mqtt_publisher.is_connected:
-                logger.info("进入到事件处理逻辑")
-                # 准备孔角度和孔测量值数组
-                hole_angles = [item.holeAngle for item in result.flatness_data]
-                hole_values = [item.flatness for item in result.flatness_data]
-
-                # 构造平面度测量数据事件字典
-                event_data = {
-                    "measure_time": int(datetime.now().timestamp() * 1000),  # 毫秒时间戳
-                    "blade_id": result.report.bladeId,  # 叶片ID
-                    "max_value": result.statistics.max_value,
-                    "min_value": result.statistics.min_value,
-                    "pv_value": result.statistics.peak_to_peak,
-                    "rms": result.statistics.rms_value,
-                    "hole_angle": hole_angles,
-                    "hole_value": hole_values,
-                    "worksheet": worksheet_name  # 添加工作表名称信息
-                }
-                logger.info(str(event_data))
-                # 发布平面度测量数据事件
-                mqtt_publisher.publish_event("flatness_data", event_data)
-                logger.info(f"Published flatness data event for file {filename} to MQTT")
-            else:
-                logger.warning(f"MQTT publisher is not available or not connected for file {filename}")
-        except AttributeError as attr_error:
-            logger.error(f"AttributeError accessing MQTT publisher for file {filename}: {attr_error}")
-            logger.error("This may indicate that current_app is not pointing to the correct application instance.")
-        except Exception as mqtt_error:
-            logger.error(f"Failed to publish data for file {filename} to MQTT: {mqtt_error}")
-            import traceback
-            logger.error(f"Full traceback: {traceback.format_exc()}")
-
         return jsonify(result.dict())
 
     except FileNotFoundError:
