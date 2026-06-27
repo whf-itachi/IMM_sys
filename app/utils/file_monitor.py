@@ -120,10 +120,10 @@ class ReportFileHandler(PatternMatchingEventHandler):
                 before_stats = flatness_before_data.statistics
                 before_part = (
                     f"**加工前平面度测量结果**\n"
-                    f"- 最大值: {before_stats.max_value:.6f}\n"
-                    f"- 最小值: {before_stats.min_value:.6f}\n"
-                    f"- 峰峰值: {before_stats.peak_to_peak:.6f}\n"
-                    f"- RMS值: {before_stats.rms_value:.6f}"
+                    f"- 最大值: {before_stats.max_value:.2f} mm\n"
+                    f"- 最小值: {before_stats.min_value:.2f} mm\n"
+                    f"- 峰峰值: {before_stats.peak_to_peak:.2f} mm\n"
+                    f"- RMS值: {before_stats.rms_value:.2f} mm"
                 )
                 flatness_info_parts.append(before_part)
 
@@ -131,10 +131,10 @@ class ReportFileHandler(PatternMatchingEventHandler):
                 after_stats = flatness_after_data.statistics
                 after_part = (
                     f"**加工后平面度测量结果**\n"
-                    f"- 最大值: {after_stats.max_value:.6f}\n"
-                    f"- 最小值: {after_stats.min_value:.6f}\n"
-                    f"- 峰峰值: {after_stats.peak_to_peak:.6f}\n"
-                    f"- RMS值: {after_stats.rms_value:.6f}"
+                    f"- 最大值: {after_stats.max_value:.2f} mm\n"
+                    f"- 最小值: {after_stats.min_value:.2f} mm\n"
+                    f"- 峰峰值: {after_stats.peak_to_peak:.2f} mm\n"
+                    f"- RMS值: {after_stats.rms_value:.2f} mm"
                 )
                 flatness_info_parts.append(after_part)
 
@@ -151,9 +151,10 @@ class ReportFileHandler(PatternMatchingEventHandler):
                 if total_duration is not None and total_duration != '':
                     try:
                         total_duration_int = int(float(total_duration))  # 先转为浮点数再转为整数，处理可能的字符串数字
-                        total_duration_display = f"{total_duration_int} 分钟"
+                        total_duration_display = (f"{total_duration_int} min"
+                                                  f"")
                     except (ValueError, TypeError):
-                        total_duration_display = f"{total_duration} 分钟"  # 如果转换失败，保持原样
+                        total_duration_display = f"{total_duration} min"  # 如果转换失败，保持原样
                 else:
                     total_duration_display = ""
 
@@ -161,7 +162,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
                     f"**加工信息统计**\n"
                     f"- 叶片ID: {blade_result_info.get('blade_id', '')}\n"
                     f"- 铣磨圈数: {blade_result_info.get('mill_circle_count', '')}\n"
-                    f"- 铣磨深度: {blade_result_info.get('mill_depth', '')}\n"
+                    f"- 铣磨深度: {float(blade_result_info.get('mill_depth', 0)):.2f} mm\n"
                     f"- 加工开始时间: {blade_result_info.get('start_time', '')}\n"
                     f"- 加工结束时间: {blade_result_info.get('end_time', '')}\n"
                     f"- 总时长: {total_duration_display}\n"
