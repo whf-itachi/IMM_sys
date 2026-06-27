@@ -7,6 +7,7 @@ from typing import List, Tuple
 import pytz
 from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData
 from app.config.app_config import REPORTS_DIR
+from app.utils.public_fun import safe_float_convert
 
 
 def get_reports_list() -> List[dict]:
@@ -68,7 +69,7 @@ def read_flatness_measure_data(file_path: str, worksheet_name: str = 'Flatness')
     try:
         # 加载工作簿
         wb = openpyxl.load_workbook(filename=file_path, data_only=True)
-        
+
         # 检查指定的工作表是否存在
         if worksheet_name in wb.sheetnames:
             ws = wb[worksheet_name]
@@ -78,14 +79,18 @@ def read_flatness_measure_data(file_path: str, worksheet_name: str = 'Flatness')
             print(f"警告: 工作表 '{worksheet_name}' 不存在，使用默认工作表 '{ws.title}'")
 
         # 读取报告基本信息
+        raw_measure_time = ws["C2"].value
+        raw_max_value = ws["B8"].value
+        raw_min_value = ws["B9"].value
+        raw_pv_value = ws["B10"].value
+        raw_rms = ws["B11"].value
+        
         report_info = {
-            'Balde_ID': ws["A2"].value,
-            'Report_Time': ws["C2"].value,
-            'UserName': ws["B3"].value,
-            'MachineStartTime': ws["B4"].value,
-            'MachineEndTime': ws["B5"].value,
-            'Duration': ws["B6"].value,
-            'DeepthSum': ws["B12"].value
+            'measure_time': raw_measure_time,
+            'max_value': safe_float_convert(raw_max_value),
+            'min_value': safe_float_convert(raw_min_value),
+            'pv_value': safe_float_convert(raw_pv_value),  # 这是峰峰值（P-V值）
+            'rms': safe_float_convert(raw_rms)            # 这是RMS值
         }
 
         # 读取测量数据（从第29行开始，对应row_index=29）
@@ -143,8 +148,8 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
     if measure_df is None or report_info is None:
         raise Exception("无法读取Excel文件数据")
 
-    # 使用从Excel文件中读取的Report_Time作为报告创建时间
-    report_time_str = report_info.get('Report_Time')
+    # 使用从Excel文件中读取的measure_time作为报告创建时间
+    report_time_str = report_info.get('measure_time')
 
     # 使用pytz设置时区
     tz = pytz.timezone('Asia/Shanghai')
@@ -164,7 +169,7 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
             file_create_dt_naive = datetime.fromtimestamp(file_create_time)
             report_created_at = tz.localize(file_create_dt_naive)
     else:
-        # 如果没有Report_Time，使用文件创建时间
+        # 如果没有measure_time，使用文件创建时间
         file_create_time = os.path.getctime(file_path)
         file_create_dt_naive = datetime.fromtimestamp(file_create_time)
         report_created_at = tz.localize(file_create_dt_naive)
@@ -172,21 +177,17 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
     # 提取平面度值用于统计计算
     flatness_values = [float(row['A']) for _, row in measure_df.iterrows() if 'A' in row and row['A'] is not None]
 
-    # 计算统计值
-    if flatness_values:
-        max_value = max(flatness_values)
-        min_value = min(flatness_values)
-        peak_to_peak = max_value - min_value  # 峰峰值
-        # RMS值计算：平方和的平均值的平方根
-        rms_value = (sum(x**2 for x in flatness_values) / len(flatness_values)) ** 0.5
-    else:
-        max_value = min_value = peak_to_peak = rms_value = 0
+    # 直接使用从Excel中读取的统计值，它们已经经过类型检查并设置默认值为0
+    max_value = report_info.get('max_value', 0)
+    min_value = report_info.get('min_value', 0)
+    peak_to_peak = report_info.get('pv_value', 0)
+    rms_value = report_info.get('rms', 0)
 
     # 构建返回数据
     report_item = ReportItem(
         id=0,  # 由于直接从文件读取，没有数据库ID
         file_name=filename,
-        bladeId=report_info.get('Balde_ID', '未知叶片ID'),
+        bladeId=report_info.get('Balde_ID', ''),
         created_at=report_created_at.strftime('%Y-%m-%d %H:%M:%S')
     )
 
@@ -198,6 +199,7 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
         data_count=len(flatness_values)
     )
 
+    # 这个是后面的孔和孔的平面度值
     flatness_data = [
         FlatnessData(
             holeIndex=int(row['Index']) if row['Index'] is not None else 0,  # 叶片孔的排序信息
@@ -256,15 +258,6 @@ def get_blade_result_data(filename: str) -> dict:
     从Excel文件的BladeResult工作表中获取加工信息
     """
     file_path = os.path.join(REPORTS_DIR, filename)
-
-    # 检查文件是否存在
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"文件不存在: {file_path}")
-
-    # 检查文件是否为Excel文件
-    if not filename.endswith(('.xlsx', '.xls')):
-        raise ValueError(f"文件不是有效的Excel文件: {filename}")
-
     try:
         # 加载工作簿
         wb = openpyxl.load_workbook(filename=file_path, data_only=True)
