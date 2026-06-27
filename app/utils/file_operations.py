@@ -7,7 +7,7 @@ from typing import List, Tuple
 import pytz
 from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData
 from app.config.app_config import REPORTS_DIR
-from app.utils.public_fun import safe_float_convert
+from app.utils.public_fun import safe_float_convert, convert_datetime_to_timestamp
 
 
 def get_reports_list() -> List[dict]:
@@ -148,36 +148,11 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
     if measure_df is None or report_info is None:
         raise Exception("无法读取Excel文件数据")
 
-    # 使用从Excel文件中读取的measure_time作为报告创建时间
-    report_time_str = report_info.get('measure_time')
-
-    # 使用pytz设置时区
-    tz = pytz.timezone('Asia/Shanghai')
-
-    if report_time_str:
-        try:
-            # 尝试解析报告时间字符串
-            if isinstance(report_time_str, datetime):
-                report_created_at = report_time_str
-            else:
-                # 假设格式为"YYYY-MM-DD HH:MM"
-                report_created_at = datetime.strptime(str(report_time_str), "%Y-%m-%d %H:%M")
-                report_created_at = tz.localize(report_created_at)
-        except (ValueError, TypeError):
-            # 如果解析失败，使用文件创建时间作为备选
-            file_create_time = os.path.getctime(file_path)
-            file_create_dt_naive = datetime.fromtimestamp(file_create_time)
-            report_created_at = tz.localize(file_create_dt_naive)
-    else:
-        # 如果没有measure_time，使用文件创建时间
-        file_create_time = os.path.getctime(file_path)
-        file_create_dt_naive = datetime.fromtimestamp(file_create_time)
-        report_created_at = tz.localize(file_create_dt_naive)
-
     # 提取平面度值用于统计计算
     flatness_values = [float(row['A']) for _, row in measure_df.iterrows() if 'A' in row and row['A'] is not None]
 
     # 直接使用从Excel中读取的统计值，它们已经经过类型检查并设置默认值为0
+    measure_time = report_info.get('measure_time', '')
     max_value = report_info.get('max_value', 0)
     min_value = report_info.get('min_value', 0)
     peak_to_peak = report_info.get('pv_value', 0)
@@ -188,10 +163,11 @@ def get_flatness_data_by_filename(filename: str, worksheet_name: str = 'Flatness
         id=0,  # 由于直接从文件读取，没有数据库ID
         file_name=filename,
         bladeId=report_info.get('Balde_ID', ''),
-        created_at=report_created_at.strftime('%Y-%m-%d %H:%M:%S')
+        created_at=report_info.get('measure_time')
     )
 
     statistics = ReportStatistics(
+        measure_time=measure_time,
         max_value=round(max_value, 6),
         min_value=round(min_value, 6),
         peak_to_peak=round(peak_to_peak, 6),
@@ -261,7 +237,7 @@ def get_blade_result_data(filename: str) -> dict:
     try:
         # 加载工作簿
         wb = openpyxl.load_workbook(filename=file_path, data_only=True)
-        
+
         # 检查是否存在BladeResult工作表
         if 'BladeResult' not in wb.sheetnames:
             wb.close()
@@ -272,12 +248,41 @@ def get_blade_result_data(filename: str) -> dict:
         # 从BladeResult工作表中读取加工信息
         # 根据常见Excel布局，重新调整单元格位置
         blade_info = {
-            'blade_id': ws["B2"].value if ws["B2"].value else ws["A2"].value,  # 叶片ID
-            'mill_circle_count': ws["B20"].value,  # 铣磨圈数 (通常在B3)
-            'mill_depth': ws["B19"].value,  # 铣磨深度 (通常在B4)
-            'start_time': ws["B4"].value,  # 加工开始时间
-            'end_time': ws["B5"].value,   # 加工结束时间
-            'total_duration': ws["B6"].value  # 总时长
+            # 基本信息
+            'blade_id': ws["B2"].value if ws["B2"].value else '',  # 叶片ID
+            'operator': ws["B3"].value if ws["B3"].value else '',  # 操作员
+            'factory': ws["B8"].value if ws["B8"].value else '',  # 工厂
+            'process_start_time': ws["B4"].value,  # 加工开始时间
+            'process_end_time': ws["B5"].value,  # 加工结束时间
+            'total_duration': ws["B6"].value,  # 总时长
+            'device_type_code': ws["B9"].value if ws["B9"].value else '',  # 设备类型编号
+            # 扫描结果
+            'scan_result': ws["B11"].value if ws["B11"].value else '',  # 扫描结果
+            'bolt_sleeve_max': ws["B12"].value,  # 螺栓套最高点
+            'bolt_sleeve_min': ws["B13"].value,  # 螺栓套最低点
+            'pitch_angle': ws["B14"].value,  # 俯仰角
+            'yaw_angle': ws["B15"].value,  # 偏航角
+            'bcd_estimate': ws["B16"].value,  # BCD估算值
+            'before_flatness': ws["B17"].value,  # 加工前平面度
+            # 铣磨结果
+            'mill_depth': ws["B19"].value,  # 铣磨深度
+            'mill_cycles': ws["B20"].value,  # 铣磨圈数
+            'mill_result': ws["B21"].value if ws["B21"].value else '',  # 最终结果
+            'after_flatness': ws["B22"].value,  # 加工后平面度
+
+            # 加工时间
+            'adjust_leg_time': ws["B24"].value,  # 调整支腿时间
+            'laser_adjust_time': ws["B25"].value,  # 激光调整时间
+            'rough_scan_time': ws["B26"].value,  # 粗扫时间
+            'fine_scan_time': ws["B27"].value,  # 精扫时间
+            'mill_time': ws["B28"].value,  # 铣削时间
+            'scan_report_time': ws["B29"].value,  # 扫描报告时间
+
+            # 铣磨功率
+            'upper_avg_power': ws["B31"].value,  # 上平均功率
+            'upper_max_power': ws["B32"].value,  # 上最大功率
+            'lower_avg_power': ws["B33"].value,  # 下平均功率
+            'lower_max_power': ws["B34"].value,  # 下最大功率
         }
 
         # 关闭工作簿

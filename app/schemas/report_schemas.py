@@ -20,6 +20,7 @@ class ReportInfo(BaseModel):
 
 
 class ReportStatistics(BaseModel):
+    measure_time: str
     max_value: float
     min_value: float
     peak_to_peak: float

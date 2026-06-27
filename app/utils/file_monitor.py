@@ -59,20 +59,25 @@ class ReportFileHandler(PatternMatchingEventHandler):
             if worksheets_info['has_flatness']:
                 logger.info(f"处理文件 {filename} 的 Flatness 工作表")
                 flatness_after_data = get_flatness_data_by_filename(filename, 'Flatness')
-                # 处理工作表并发布 加工后的flatness_data事件
-                self.process_worksheet_with_data(filename, 'Flatness', 'after', flatness_after_data)
+
             if worksheets_info['has_flatness_before']:
                 logger.info(f"处理文件 {filename} 的 FlatnessBefore 工作表")
                 flatness_before_data = get_flatness_data_by_filename(filename, 'FlatnessBefore')
-                # 处理工作表并发布 加工后的flatness_data事件
-                self.process_worksheet_with_data(filename, 'FlatnessBefore', 'before', flatness_before_data)
 
             # 检查是否有BladeResult工作表，并处理
             if worksheets_info['has_blade_result']:
                 logger.info(f"处理文件 {filename} 的 BladeResult 工作表")
                 # 获取BladeResult数据但暂不处理，传递给process_flatness_results统一处理
                 blade_result_info = get_blade_result_data(filename)
-                # 直接在此处处理BladeResult的单独事件
+
+            if flatness_after_data:
+                # 处理工作表并发布 加工后的flatness_data事件
+                self.process_worksheet_with_data(filename, 'Flatness', 'after', flatness_after_data)
+            if flatness_before_data:
+                # 处理工作表并发布 加工后的flatness_data事件
+                self.process_worksheet_with_data(filename, 'FlatnessBefore', 'before', flatness_before_data)
+            if blade_result_info:
+                # 处理process_log_report事件
                 self.process_blade_result(filename, blade_result_info)
 
             # 处理汇总结果并发送钉钉通知，统一处理所有数据
@@ -95,7 +100,7 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
                 # 构造平面度测量数据事件字典
                 event_data = {
-                    "measure_time": int(datetime.now().timestamp() * 1000),  # 毫秒时间戳
+                    "measure_time": flatness_data.statistics.measure_time,
                     "blade_id": flatness_data.report.bladeId,  # 叶片ID
                     "max_value": flatness_data.statistics.max_value,
                     "min_value": flatness_data.statistics.min_value,
@@ -126,24 +131,39 @@ class ReportFileHandler(PatternMatchingEventHandler):
             if self.mqtt_publisher and self.mqtt_publisher.is_connected:
                 # 构建process_log_report事件所需的数据
                 event_data = dict()
+                
                 # 基本信息
                 event_data["blade_id"] = blade_result_info.get('blade_id', '')
                 event_data["operator"] = blade_result_info.get('operator', '')
+                event_data["process_start_time"] = blade_result_info.get('process_start_time', '')
+                event_data["process_end_time"] = blade_result_info.get('process_end_time', '')
+                event_data["total_duration"] = blade_result_info.get('total_duration', '')
                 event_data["factory"] = blade_result_info.get('factory', '')
                 event_data["device_type_code"] = blade_result_info.get('device_type_code', '')
+                
+                # 扫描相关数据
                 event_data["scan_result"] = blade_result_info.get('scan_result', '')
                 event_data["bolt_sleeve_max"] = safe_float_convert(blade_result_info.get('bolt_sleeve_max'))
                 event_data["bolt_sleeve_min"] = safe_float_convert(blade_result_info.get('bolt_sleeve_min'))
                 event_data["pitch_angle"] = safe_float_convert(blade_result_info.get('pitch_angle'))
                 event_data["yaw_angle"] = safe_float_convert(blade_result_info.get('yaw_angle'))
                 event_data["bcd_estimate"] = safe_float_convert(blade_result_info.get('bcd_estimate'))
+                event_data["before_flatness"] = blade_result_info.get('before_flatness', '')
+
+                # 铣磨结果
+                event_data["mill_depth"] = blade_result_info.get('mill_depth', '')
+                event_data["mill_cycles"] = blade_result_info.get('mill_cycles', '')
                 event_data["mill_result"] = blade_result_info.get('mill_result', '')
+                event_data["after_flatness"] = blade_result_info.get('after_flatness', '')
+                # process time
                 event_data["adjust_leg_time"] = safe_float_convert(blade_result_info.get('adjust_leg_time'))
                 event_data["laser_adjust_time"] = safe_float_convert(blade_result_info.get('laser_adjust_time'))
                 event_data["rough_scan_time"] = safe_float_convert(blade_result_info.get('rough_scan_time'))
                 event_data["fine_scan_time"] = safe_float_convert(blade_result_info.get('fine_scan_time'))
                 event_data["mill_time"] = safe_float_convert(blade_result_info.get('mill_time'))
                 event_data["scan_report_time"] = safe_float_convert(blade_result_info.get('scan_report_time'))
+                
+                # 功率相关数据
                 event_data["upper_avg_power"] = safe_float_convert(blade_result_info.get('upper_avg_power'))
                 event_data["upper_max_power"] = safe_float_convert(blade_result_info.get('upper_max_power'))
                 event_data["lower_avg_power"] = safe_float_convert(blade_result_info.get('lower_avg_power'))
@@ -207,10 +227,10 @@ class ReportFileHandler(PatternMatchingEventHandler):
             process_info_markdown = (
                 f"**加工信息统计**\n"
                 f"- 叶片ID: {blade_result_info.get('blade_id', '')}\n"
-                f"- 铣磨圈数: {blade_result_info.get('mill_circle_count', '')}\n"
+                f"- 铣磨圈数: {blade_result_info.get('mill_cycles', '')}\n"
                 f"- 铣磨深度: {float(blade_result_info.get('mill_depth', 0)):.2f} mm\n"
-                f"- 加工开始时间: {blade_result_info.get('start_time', '')}\n"
-                f"- 加工结束时间: {blade_result_info.get('end_time', '')}\n"
+                f"- 加工开始时间: {blade_result_info.get('process_start_time', '')}\n"
+                f"- 加工结束时间: {blade_result_info.get('process_end_time', '')}\n"
                 f"- 总时长: {total_duration_display}\n"
             )
         else:
