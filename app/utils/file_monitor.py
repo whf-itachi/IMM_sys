@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import PatternMatchingEventHandler
@@ -32,22 +33,141 @@ class ReportFileHandler(PatternMatchingEventHandler):
         filename = os.path.basename(file_path)
 
         logger.info(f"检测到新的Excel文件: {filename}")
+        
         # 使用线程异步处理文件，避免阻塞文件监控
         thread = threading.Thread(
-            target=self.process_new_file,
-            args=(filename,)
+            target=self._wait_and_process_file,
+            args=(file_path, filename)
         )
         thread.daemon = True
         thread.start()
+
+    def _wait_and_process_file(self, file_path, filename):
+        """
+        等待文件不再被占用后再处理文件
+        """
+        max_retries = 10
+        retry_delay = 0.5  # 初始延迟0.5秒
+        
+        for attempt in range(max_retries):
+            if self._is_file_ready_for_processing(file_path):
+                logger.info(f"文件 {filename} 已准备好，开始处理")
+                
+                # 使用线程异步处理文件，避免阻塞文件监控
+                thread = threading.Thread(
+                    target=self.process_new_file,
+                    args=(filename,)
+                )
+                thread.daemon = True
+                thread.start()
+                
+                return  # 成功启动处理线程后退出循环
+            else:
+                # 文件仍然被占用或正在写入，等待一段时间后重试
+                logger.info(f"文件 {filename} 正在被写入，等待 {retry_delay}s 后重试... ({attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+                # 增加延迟时间（指数退避）
+                retry_delay *= 1.5
+                
+        # 如果达到最大重试次数仍未成功，则记录错误
+        logger.error(f"达到最大重试次数，无法处理文件 {filename}，可能仍在写入中")
+
+    def _is_file_ready_for_processing(self, file_path):
+        """
+        检查文件是否准备好进行处理
+        """
+        try:
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                return False
+            
+            # 检查文件大小是否稳定
+            initial_size = os.path.getsize(file_path)
+            time.sleep(0.1)  # 短暂等待
+            current_size = os.path.getsize(file_path)
+            
+            if initial_size != current_size:
+                # 文件大小仍在变化，说明仍在写入
+                return False
+            
+            # 尝试以独占模式打开文件（仅在支持的系统上有效）
+            # 在Windows上，如果文件正在被写入，这将失败
+            with open(file_path, 'rb'):
+                pass
+            
+            # 检查文件扩展名是否为Excel格式
+            if not (file_path.lower().endswith('.xlsx') or file_path.lower().endswith('.xls')):
+                return False
+                
+            # 检查文件头部是否为Excel格式
+            with open(file_path, 'rb') as f:
+                header = f.read(32)  # 读取前32字节检查文件头
+                if not self._is_excel_file_header(header):
+                    return False
+                    
+            return True
+            
+        except (IOError, OSError):
+            # 文件被占用或无法访问
+            return False
 
     def process_new_file(self, filename):
         """
         处理新创建的Excel文件
         """
         try:
-            # 获取文件中的工作表信息
-            worksheets_info = get_available_worksheets(filename)
-            logger.info(f"文件 {filename} 包含的工作表: {worksheets_info['worksheets']}")
+            # 再次检查文件是否存在且可访问
+            file_path = os.path.join(REPORTS_DIR, filename)
+            if not os.path.exists(file_path):
+                logger.error(f"文件 {filename} 不存在，跳过处理")
+                return
+
+            # 检查文件大小，确保文件完全写入
+            initial_size = os.path.getsize(file_path)
+            logger.info(f"初始文件大小: {initial_size} bytes")
+            
+            # 等待文件大小稳定，防止文件仍在写入
+            for i in range(10):  # 最多等待约5秒
+                time.sleep(0.5)  # 等待0.5秒
+                current_size = os.path.getsize(file_path)
+                logger.debug(f"检查文件大小: {current_size} bytes")
+                
+                if initial_size == current_size:
+                    logger.info(f"文件大小已稳定，继续处理: {current_size} bytes")
+                    break
+                else:
+                    logger.info(f"文件大小仍在变化: {initial_size} -> {current_size}, 继续等待...")
+                    initial_size = current_size
+
+            # 确保文件不是被其他进程锁定的状态
+            try:
+                with open(file_path, 'rb') as f:
+                    # 尝试读取一点内容确认文件完整性
+                    chunk = f.read(1024)
+                    if len(chunk) > 0:
+                        # 检查是否是Excel文件的头部特征
+                        if not self._is_excel_file_header(chunk):
+                            logger.error(f"文件 {filename} 不是有效的Excel文件格式")
+                            return
+            except (IOError, OSError) as e:
+                logger.error(f"文件 {filename} 仍被占用或无法访问: {str(e)}")
+                return
+
+            # 获取文件中的工作表信息，添加重试机制
+            worksheets_info = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    worksheets_info = get_available_worksheets(filename)
+                    logger.info(f"文件 {filename} 包含的工作表: {worksheets_info['worksheets']}")
+                    break  # 成功读取，跳出循环
+                except Exception as e:
+                    logger.warning(f"第 {attempt + 1} 次尝试读取文件 {filename} 工作表时出错: {str(e)}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)  # 等待1秒后重试
+                    else:
+                        logger.error(f"无法读取文件 {filename} 的工作表，已达到最大重试次数")
+                        return  # 退出整个函数
 
             # 初始化加工前后的数据变量
             flatness_after_data = None
@@ -58,17 +178,50 @@ class ReportFileHandler(PatternMatchingEventHandler):
             # 检查是否存在Flatness或FlatnessBefore工作表，一次性读取数据
             if worksheets_info['has_flatness']:
                 logger.info(f"处理文件 {filename} 的 Flatness 工作表")
-                flatness_after_data = get_flatness_data_by_filename(filename, 'Flatness')
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        flatness_after_data = get_flatness_data_by_filename(filename, 'Flatness')
+                        break  # 成功读取，跳出循环
+                    except Exception as e:
+                        logger.warning(f"第 {attempt + 1} 次尝试读取文件 {filename} Flatness数据时出错: {str(e)}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1)  # 等待1秒后重试
+                        else:
+                            logger.error(f"无法读取文件 {filename} 的Flatness数据，已达到最大重试次数")
+                            # 不返回，继续处理其他可能存在的工作表
 
             if worksheets_info['has_flatness_before']:
                 logger.info(f"处理文件 {filename} 的 FlatnessBefore 工作表")
-                flatness_before_data = get_flatness_data_by_filename(filename, 'FlatnessBefore')
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        flatness_before_data = get_flatness_data_by_filename(filename, 'FlatnessBefore')
+                        break  # 成功读取，跳出循环
+                    except Exception as e:
+                        logger.warning(f"第 {attempt + 1} 次尝试读取文件 {filename} FlatnessBefore数据时出错: {str(e)}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1)  # 等待1秒后重试
+                        else:
+                            logger.error(f"无法读取文件 {filename} 的FlatnessBefore数据，已达到最大重试次数")
+                            # 不返回，继续处理其他可能存在的工作表
 
             # 检查是否有BladeResult工作表，并处理
             if worksheets_info['has_blade_result']:
                 logger.info(f"处理文件 {filename} 的 BladeResult 工作表")
-                # 获取BladeResult数据但暂不处理，传递给process_flatness_results统一处理
-                blade_result_info = get_blade_result_data(filename)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        # 获取BladeResult数据但暂不处理，传递给process_flatness_results统一处理
+                        blade_result_info = get_blade_result_data(filename)
+                        break  # 成功读取，跳出循环
+                    except Exception as e:
+                        logger.warning(f"第 {attempt + 1} 次尝试读取文件 {filename} BladeResult数据时出错: {str(e)}")
+                        if attempt < max_retries - 1:
+                            time.sleep(1)  # 等待1秒后重试
+                        else:
+                            logger.error(f"无法读取文件 {filename} 的BladeResult数据，已达到最大重试次数")
+                            # 不返回，继续处理其他可能存在的工作表
 
             if flatness_after_data:
                 # 处理工作表并发布 加工后的flatness_data事件
@@ -85,6 +238,23 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
         except Exception as e:
             logger.error(f"处理新文件 {filename} 时出错: {str(e)}")
+
+    def _is_excel_file_header(self, header_bytes):
+        """
+        检查字节头是否符合Excel文件格式
+        """
+        # Excel文件通常以特定的字节序列开头
+        # XLSX文件以ZIP格式存储，开头是PK标志
+        # XLS文件有特定的BOF（Beginning of File）记录
+        pk_signature = b'PK'
+        xls_biff_signature = b'\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1'  # OLE2复合文档格式
+        
+        if header_bytes.startswith(pk_signature):
+            return True
+        if header_bytes.startswith(xls_biff_signature):
+            return True
+        
+        return False
 
     # 发送平面度测量结果事件
     def process_worksheet_with_data(self, filename, worksheet_name, process_stage, flatness_data):

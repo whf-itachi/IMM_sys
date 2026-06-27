@@ -48,9 +48,10 @@
 python run_server.py
 ```
 
-或者使用环境变量指定端口和主机：
+开机自启文件
 ```
-PORT=8080 HOST=0.0.0.0 python run_server.py
+1. 按 Win + R 键，输入 shell:startup 并按回车
+2. 将 start_imm_sys.bat 文件复制到打开的启动文件夹中
 ```
 
 ## API接口
