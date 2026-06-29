@@ -223,6 +223,27 @@ class ReportFileHandler(PatternMatchingEventHandler):
                             logger.error(f"无法读取文件 {filename} 的BladeResult数据，已达到最大重试次数")
                             # 不返回，继续处理其他可能存在的工作表
 
+            # 给平面度扫描报告添加统一的叶片名称,如果没有则生成一个当前日期的字符串作为叶片名称
+            if blade_result_info and blade_result_info.get('blade_id', ''):
+                blade_id = blade_result_info.get('blade_id', '')
+                flatness_after_data.report.bladeId = blade_id
+                flatness_before_data.report.bladeId = blade_id
+            else:
+                # 生成当前日期的字符串作为叶片名称 (格式: YYYYMMDDHHMMSS)
+                current_datetime_str = datetime.now().strftime("%Y%m%d%H%M%S")
+                blade_id = f"BLADE_{current_datetime_str}"
+                
+                if blade_result_info:
+                    blade_result_info['blade_id'] = blade_id
+                else:
+                    # 如果没有blade_result_info，则创建一个新的字典
+                    blade_result_info = {'blade_id': blade_id}
+                
+                if flatness_after_data:
+                    flatness_after_data.report.bladeId = blade_id
+                if flatness_before_data:
+                    flatness_before_data.report.bladeId = blade_id
+
             if flatness_after_data:
                 # 处理工作表并发布 加工后的flatness_data事件
                 self.process_worksheet_with_data(filename, 'Flatness', 'after', flatness_after_data)

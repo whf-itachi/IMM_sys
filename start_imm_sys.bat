@@ -5,7 +5,7 @@ REM 设置项目路径
 set PROJECT_PATH=D:\haitch\IMM_sys
 
 REM 设置虚拟环境路径
-set VENV_PATH=%PROJECT_PATH%\.venv
+set VENV_PATH=%PROJECT_PATH%\venv
 
 echo 正在启动 IMM 系统...
 
