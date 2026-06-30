@@ -112,41 +112,37 @@ class PLCDataCollector:
     def send_alarm_events(self, alarm_descriptions):
         """发送报警事件到物联网平台"""
         try:
-            # 检查是否有报警状态变化
+            # 检查是否有报警
             if not hasattr(self, '_previous_active_alarms'):
                 self._previous_active_alarms = set()
 
             current_active_alarms = set(alarm_descriptions)
-            # self._previous_active_alarms = set()  # 测试
-            # 只有当报警状态发生变化时才发送事件
-            if current_active_alarms != self._previous_active_alarms:
-                # 计算新增的报警和解除的报警
-                new_alarms = current_active_alarms - self._previous_active_alarms
-                resolved_alarms = self._previous_active_alarms - current_active_alarms
+            
+            # 计算新增的报警和解除的报警
+            new_alarms = current_active_alarms - self._previous_active_alarms
+            resolved_alarms = self._previous_active_alarms - current_active_alarms
 
-                # 将报警描述转换为markdown格式的富文本字符串
-                alarms_markdown = "\n".join([f"- {desc}" for desc in sorted(current_active_alarms)])
+            # 将报警描述转换为markdown格式的富文本字符串
+            alarms_markdown = "\n".join([f"- {desc}" for desc in sorted(current_active_alarms)])
 
-                # 创建报警事件数据 - 发送当前所有激活的报警
-                alarm_event_data = {
-                    "alarms": alarms_markdown
-                }
+            # 创建报警事件数据 - 发送当前所有激活的报警
+            alarm_event_data = {
+                "alarms": alarms_markdown
+            }
 
-                # 发送报警事件
-                result = self.mqtt_publisher.publish_event("alarm_log", alarm_event_data)
-                if result:
-                    if new_alarms:
-                        logger.info(f"新增报警: {sorted(list(new_alarms))}")
-                    if resolved_alarms:
-                        logger.info(f"解除报警: {sorted(list(resolved_alarms))}")
-                    logger.info(f"报警事件成功发送到物联网平台: {sorted(list(current_active_alarms))}")
-                else:
-                    logger.error(f"发送报警事件到物联网平台失败: {sorted(list(current_active_alarms))}")
-
-                # 更新上一次的报警状态
-                self._previous_active_alarms = current_active_alarms
+            # 发送报警事件
+            result = self.mqtt_publisher.publish_event("alarm_log", alarm_event_data)
+            if result:
+                if new_alarms:
+                    logger.info(f"新增报警: {sorted(list(new_alarms))}")
+                if resolved_alarms:
+                    logger.info(f"解除报警: {sorted(list(resolved_alarms))}")
+                logger.info(f"报警事件成功发送到物联网平台: {sorted(list(current_active_alarms))}")
             else:
-                logger.debug("报警状态无变化，跳过发送事件")
+                logger.error(f"发送报警事件到物联网平台失败: {sorted(list(current_active_alarms))}")
+
+            # 更新上一次的报警状态
+            self._previous_active_alarms = current_active_alarms
 
         except Exception as e:
             logger.error(f"发送报警事件到物联网平台时出错: {e}")
@@ -165,51 +161,16 @@ class PLCDataCollector:
             logger.error(f"不支持的协议类型: {self.protocol}")
             return {}
 
-    def read_raw_alarm_data(self):
-        """读取原始报警数据块(DB2)"""
-        try:
-            # 读取GDB_Errors数据块(DB2)，总共52字节
-            # 即使我们只解析前16字节（ErrWord0-ErrWord7），仍需读取完整数据块以确保数据完整性
-            alarm_bytes = self.snap7_client.db_read(2, 0, 52)
-
-            # 记录原始字节信息到日志（包括十六进制和二进制表示）
-            hex_repr = [hex(b) for b in alarm_bytes]
-            bin_repr = [format(b, '08b') for b in alarm_bytes]
-
-            logger.info(f"从PLC读取的原始字节 (前16字节十六进制): {hex_repr[:16]}")
-            logger.info(f"从PLC读取的原始字节 (前16字节二进制): {bin_repr[:16]}")
-
-            return alarm_bytes
-        except Exception as e:
-            logger.error(f"读取原始报警数据失败: {e}")
-            import traceback
-            logger.error(f"读取原始报警数据完整错误堆栈: {traceback.format_exc()}")
-            return []
-
     def get_activated_bits(self, alarm_bytes):
         """获取激活的位信息，返回格式为[(ErrWord_index, bit_position), ...]"""
         activated_bits = []
         
         # 记录ErrWord的解析（使用大端序）
-        logger.info("=== ErrWord解析（使用大端序）===")
         for i in range(min(len(alarm_bytes)//2, 8)):  # 最多8个ErrWord
             first_byte = alarm_bytes[i*2] if i*2 < len(alarm_bytes) else 0
             second_byte = alarm_bytes[i*2+1] if i*2+1 < len(alarm_bytes) else 0
             word_value = (first_byte << 8) | second_byte  # 大端序
-            logger.info(f"  ErrWord{i} (字节{i*2}-{i*2+1}): 0x{word_value:04X} = {format(word_value, '016b')}")
-            
-            # 详细显示位状态
-            # 对于16位的word，位编号从右往左数（标准位编号方式，LSB=0）
-            # 例如: 0x0880 = 0000100010000000
-            # 位编号(右->左): FEDCBA9876543210 (十六进制表示)
-            #                1111111111000000
-            #                5432109876543210
-            # 从右边第一位开始编号，即LSB为0
-            # 在大端序下，ErrWord = (byte0 << 8) | byte1
-            # 所以，byte0的bit7 对应 ErrWord的bit15 (最高位)
-            #      byte0的bit0 对应 ErrWord的bit8
-            #      byte1的bit7 对应 ErrWord的bit7
-            #      byte1的bit0 对应 ErrWord的bit0 (最低位)
+
             for bit_pos in range(16):
                 # 检查从右往左的第bit_pos位是否为1（标准位编号方式）
                 if (word_value >> bit_pos) & 1:
@@ -241,20 +202,33 @@ class PLCDataCollector:
     def collect_loop(self):
         """数据采集主循环"""
         logger.info("开始报警数据采集循环")
+        
+        # 初始化上一次的激活位状态
+        previous_activated_bits = set()
 
         while self.running_event.is_set():
             try:
                 # 读取PLC原始报警数据（字节数组）
-                raw_alarm_data = self.read_raw_alarm_data()
+                raw_alarm_data = self.snap7_client.db_read(2, 0, 52)
 
                 # 第一步：获取告警的数据，有哪些字节组的哪些比特位值为1
                 activated_bits = self.get_activated_bits(raw_alarm_data)
+                
+                # 将当前激活的位转换为集合，便于比较
+                current_activated_bits = set(activated_bits)
 
-                # 第二步：在ALARM_MAPPING_DICT查询该值对应的报警描述并返回为数组
-                alarm_descriptions = self.get_alarm_descriptions_from_bits(activated_bits)
+                # 检查激活的位是否发生了变化
+                if current_activated_bits != previous_activated_bits:
+                    # 更新上一次的激活位状态
+                    previous_activated_bits = current_activated_bits
+                    
+                    # 第二步：在ALARM_MAPPING_DICT查询该值对应的报警描述并返回为数组
+                    alarm_descriptions = self.get_alarm_descriptions_from_bits(activated_bits)
 
-                # 第三步：调用mqtt方法发送事件到物联网平台
-                self.send_alarm_events(alarm_descriptions)
+                    # 第三步：调用mqtt方法发送事件到物联网平台
+                    self.send_alarm_events(alarm_descriptions)
+                else:
+                    logger.debug("报警状态无变化，跳过处理")
 
                 # 等待下一个采集周期
                 time.sleep(self.scan_interval)
