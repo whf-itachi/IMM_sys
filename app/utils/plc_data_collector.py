@@ -112,18 +112,8 @@ class PLCDataCollector:
     def send_alarm_events(self, alarm_descriptions):
         """发送报警事件到物联网平台"""
         try:
-            # 检查是否有报警
-            if not hasattr(self, '_previous_active_alarms'):
-                self._previous_active_alarms = set()
-
-            current_active_alarms = set(alarm_descriptions)
-            
-            # 计算新增的报警和解除的报警
-            new_alarms = current_active_alarms - self._previous_active_alarms
-            resolved_alarms = self._previous_active_alarms - current_active_alarms
-
             # 将报警描述转换为markdown格式的富文本字符串
-            alarms_markdown = "\n".join([f"- {desc}" for desc in sorted(current_active_alarms)])
+            alarms_markdown = "\n".join([f"- {desc}" for desc in sorted(alarm_descriptions)])
 
             # 创建报警事件数据 - 发送当前所有激活的报警
             alarm_event_data = {
@@ -133,35 +123,15 @@ class PLCDataCollector:
             # 发送报警事件
             result = self.mqtt_publisher.publish_event("alarm_log", alarm_event_data)
             if result:
-                if new_alarms:
-                    logger.info(f"新增报警: {sorted(list(new_alarms))}")
-                if resolved_alarms:
-                    logger.info(f"解除报警: {sorted(list(resolved_alarms))}")
-                logger.info(f"报警事件成功发送到物联网平台: {sorted(list(current_active_alarms))}")
+                logger.info(f"报警事件成功发送到物联网平台: {sorted(list(alarm_descriptions))}")
             else:
-                logger.error(f"发送报警事件到物联网平台失败: {sorted(list(current_active_alarms))}")
-
-            # 更新上一次的报警状态
-            self._previous_active_alarms = current_active_alarms
+                logger.error(f"发送报警事件到物联网平台失败: {sorted(list(alarm_descriptions))}")
 
         except Exception as e:
             logger.error(f"发送报警事件到物联网平台时出错: {e}")
 
-    def read_plc_data(self):
-        """读取PLC报警数据"""
-        if self.protocol == 'snap7':
-            try:
-                # 读取报警数据块(DB2)，获取报警信息
-                alarm_data = self.read_alarm_data()
-                return alarm_data
-            except Exception as e:
-                logger.error(f"读取Snap7报警数据失败: {e}")
-                raise RuntimeError("Failed to get alarm data.") from e
-        else:
-            logger.error(f"不支持的协议类型: {self.protocol}")
-            return {}
-
-    def get_activated_bits(self, alarm_bytes):
+    @staticmethod
+    def get_activated_bits(alarm_bytes):
         """获取激活的位信息，返回格式为[(ErrWord_index, bit_position), ...]"""
         activated_bits = []
         
@@ -179,7 +149,8 @@ class PLCDataCollector:
         logger.info(f"激活的位: {activated_bits}")
         return activated_bits
 
-    def get_alarm_descriptions_from_bits(self, activated_bits):
+    @staticmethod
+    def get_alarm_descriptions_from_bits(activated_bits):
         """根据激活的位信息查询ALARM_MAPPING_DICT，返回对应的报警描述列表"""
         alarm_descriptions = []
 
