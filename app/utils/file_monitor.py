@@ -390,11 +390,18 @@ class ReportFileHandler(PatternMatchingEventHandler):
 
         if flatness_after_data:
             after_stats = flatness_after_data.statistics
+            # 根据峰峰值添加标记
+            peak_to_peak = after_stats.peak_to_peak
+            if peak_to_peak > 0.5:
+                peak_to_peak_status = " ❌"  # 红色×
+            else:
+                peak_to_peak_status = " ✅"  # 绿色✓
+            
             after_part = (
                 f"**加工后平面度测量结果**\n"
                 f"- 最大值: {after_stats.max_value:.2f} mm\n"
                 f"- 最小值: {after_stats.min_value:.2f} mm\n"
-                f"- 峰峰值: {after_stats.peak_to_peak:.2f} mm\n"
+                f"- 峰峰值: {after_stats.peak_to_peak:.2f} mm{peak_to_peak_status}\n"
                 f"- RMS值: {after_stats.rms_value:.2f} mm"
             )
             flatness_info_parts.append(after_part)
