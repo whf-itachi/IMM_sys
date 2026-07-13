@@ -7,7 +7,6 @@ from typing import List, Tuple
 import pytz
 from app.schemas.report_schemas import FlatnessResponse, ReportItem, ReportStatistics, FlatnessData
 from app.config.app_config import REPORTS_DIR
-from app.utils.public_fun import safe_float_convert, convert_datetime_to_timestamp
 
 
 def get_reports_list() -> List[dict]:
@@ -80,18 +79,6 @@ def read_flatness_measure_data(file_path: str, worksheet_name: str = 'Flatness')
 
         # 读取报告基本信息
         raw_measure_time = ws["C2"].value
-        raw_max_value = ws["B8"].value
-        raw_min_value = ws["B9"].value
-        raw_pv_value = ws["B10"].value
-        raw_rms = ws["B11"].value
-        
-        report_info = {
-            'measure_time': raw_measure_time,
-            'max_value': safe_float_convert(raw_max_value),
-            'min_value': safe_float_convert(raw_min_value),
-            'pv_value': safe_float_convert(raw_pv_value),  # 这是峰峰值（P-V值）
-            'rms': safe_float_convert(raw_rms)            # 这是RMS值
-        }
 
         # 读取测量数据（从第29行开始，对应row_index=29）
         measure_data = []
@@ -118,6 +105,31 @@ def read_flatness_measure_data(file_path: str, worksheet_name: str = 'Flatness')
 
         # 转换为DataFrame
         df = pd.DataFrame(measure_data)
+
+        # 从C列数据范围内读取有效数值并手动计算统计值
+        # 提取平面度值用于统计计算
+        flatness_values = [float(row['A']) for row in measure_data if row['A'] is not None and isinstance(row['A'], (int, float))]
+
+        if flatness_values:
+            # 手动计算统计值
+            max_value = max(flatness_values)
+            min_value = min(flatness_values)
+            pv_value = max_value - min_value
+            # 计算RMS值 (均方根值)
+            import math
+            squared_values = [v ** 2 for v in flatness_values]
+            rms_value = math.sqrt(sum(squared_values) / len(squared_values))
+        else:
+            # 如果没有数据，使用默认值
+            max_value = min_value = pv_value = rms_value = 0
+
+        report_info = {
+            'measure_time': raw_measure_time,
+            'max_value': max_value,
+            'min_value': min_value,
+            'pv_value': pv_value,  # 这是峰峰值（P-V值）
+            'rms': rms_value  # 这是RMS值
+        }
 
         # 关闭工作簿
         wb.close()
