@@ -36,10 +36,26 @@ class JetLinksMQTTPublisher:
     def __init__(self):
         self._client: Optional[mqtt.Client] = None
         self._connected = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._connect_attempts = 0
         self._reconnecting = False
         self._tls_insecure = True  # 是否关闭域名校验（自签证书开启True）
+        self._shutting_down = False
+
+    def _cleanup_client(self):
+        """清理旧客户端：停止网络循环、断开socket"""
+        if self._client is None:
+            return
+        old = self._client
+        self._client = None
+        try:
+            old.loop_stop()
+        except Exception:
+            pass
+        try:
+            old.disconnect()
+        except Exception:
+            pass
 
     def connect(self):
         """Initialize and connect the MQTT client."""
@@ -52,6 +68,9 @@ class JetLinksMQTTPublisher:
             if self._connected:
                 logger.info("MQTT client is already connected.")
                 return
+
+            # 清理旧连接，防止loop_start线程泄漏
+            self._cleanup_client()
 
             try:
                 # 动态生成认证凭据
@@ -112,6 +131,9 @@ class JetLinksMQTTPublisher:
                 logger.error(f"Error connecting to MQTT broker: {e}", exc_info=True)
                 self._connected = False
                 self._reconnecting = False
+                self._cleanup_client()
+                # 首次连接失败也自动重试（如开机时网络未就绪）
+                self._auto_reconnect()
                 raise e
 
     def _setup_tls(self):
@@ -160,30 +182,39 @@ class JetLinksMQTTPublisher:
 
     def _auto_reconnect(self):
         """断线后台指数退避重连，独立线程执行"""
-        if self._reconnecting or self._connected:
+        if self._shutting_down or self._reconnecting or self._connected:
             return
 
         with self._lock:
-            if self._reconnecting or self._connected:
+            if self._shutting_down or self._reconnecting or self._connected:
                 return
             self._reconnecting = True
 
         self._connect_attempts += 1
-        # 指数退避，最大延迟30秒
-        delay = min(2 * self._connect_attempts, 30)
+
+        # 指数退避封顶60秒，无限重连（MQTT本就应该持久连接）
+        delay = min(2 * self._connect_attempts, 60)
         logger.info(f"Schedule background reconnect after {delay}s, attempt count={self._connect_attempts}")
 
         def reconnect_task():
             try:
                 time.sleep(delay)
-                if not self._connected and not self._reconnecting:
+                if not self._connected and not self._shutting_down:
                     logger.info("Attempting to reconnect to MQTT broker...")
                     self.connect()
             except Exception as e:
                 logger.error(f"Background reconnect task failed: {e}")
+                self._cleanup_client()
             finally:
+                need_retry = False
                 with self._lock:
                     self._reconnecting = False
+                    # connect() 内部调 _auto_reconnect 因 _reconnecting=True 被跳过，
+                    # 所以在这里重置后补调度，保证重连链不断
+                    if not self._connected and not self._shutting_down:
+                        need_retry = True
+                if need_retry:
+                    self._auto_reconnect()
 
         threading.Thread(target=reconnect_task, daemon=True).start()
 
@@ -193,6 +224,7 @@ class JetLinksMQTTPublisher:
 
     def disconnect(self):
         """安全断开连接，释放资源"""
+        self._shutting_down = True
         if self._client:
             logger.info("Disconnecting from MQTT broker...")
             self._client.loop_stop()

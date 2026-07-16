@@ -45,6 +45,7 @@ class PLCDataCollector:
         self.mqtt_publisher = mqtt_publisher  # 外部传入的MQTT实例
         self.protocol = protocol  # 当前仅支持 'snap7'
         self.snap7_client = None
+        self._shutting_down = False
 
         self._initialized = True
 
@@ -57,7 +58,8 @@ class PLCDataCollector:
                     logger.info("PLC已经连接，无需重复连接")
                     return True
 
-                # 使用Snap7协议连接
+                # 断开旧连接（如果有），再创建新连接
+                self.disconnect_plc()
                 self.snap7_client = snap7.client.Client()
                 
                 # 设置连接参数，增加超时时间
@@ -170,29 +172,59 @@ class PLCDataCollector:
         logger.info(f"查询到的报警描述: {alarm_descriptions}")
         return alarm_descriptions
 
+    def _start_collection(self):
+        """实际启动采集循环"""
+        if self._shutting_down:
+            return
+        self.running_event.set()
+        self.thread = threading.Thread(target=self.collect_loop, daemon=True)
+        self.thread.start()
+        logger.info("报警数据采集器已启动")
+
+    def _start_connect_retry(self):
+        """后台重试连接PLC，成功后自动启动采集"""
+        def retry_loop():
+            delay = 2
+            while not self._shutting_down and self.running_event.is_set() is False:
+                time.sleep(delay)
+                logger.info(f"尝试重新连接PLC ({self.plc_ip})...")
+                if self.connect_plc():
+                    if self._shutting_down:
+                        self.disconnect_plc()
+                        return
+                    logger.info("PLC重连成功，启动采集")
+                    self._start_collection()
+                    return
+                delay = min(delay * 2, 60)
+                logger.warning(f"PLC重连失败，{delay}s后重试")
+
+        t = threading.Thread(target=retry_loop, daemon=True, name="plc-connect-retry")
+        t.start()
+
     def collect_loop(self):
         """数据采集主循环"""
         logger.info("开始报警数据采集循环")
-        
-        # 初始化上一次的激活位状态
-        previous_activated_bits = set()
 
-        while self.running_event.is_set():
+        previous_activated_bits = set()
+        consecutive_errors = 0
+
+        while self.running_event.is_set() and not self._shutting_down:
             try:
                 # 读取PLC原始报警数据（字节数组）
                 raw_alarm_data = self.snap7_client.db_read(2, 0, 52)
 
+                consecutive_errors = 0  # 成功读取，重置错误计数
+
                 # 第一步：获取告警的数据，有哪些字节组的哪些比特位值为1
                 activated_bits = self.get_activated_bits(raw_alarm_data)
-                
+
                 # 将当前激活的位转换为集合，便于比较
                 current_activated_bits = set(activated_bits)
 
                 # 检查激活的位是否发生了变化
                 if current_activated_bits != previous_activated_bits:
-                    # 更新上一次的激活位状态
                     previous_activated_bits = current_activated_bits
-                    
+
                     # 第二步：在ALARM_MAPPING_DICT查询该值对应的报警描述并返回为数组
                     alarm_descriptions = self.get_alarm_descriptions_from_bits(activated_bits)
 
@@ -205,8 +237,22 @@ class PLCDataCollector:
                 time.sleep(self.scan_interval)
 
             except Exception as e:
-                logger.error(f"报警数据采集循环中出现错误: {e}")
-                time.sleep(self.scan_interval)  # 继续尝试
+                consecutive_errors += 1
+                logger.error(f"报警数据采集循环错误(连续{consecutive_errors}次): {e}")
+
+                # 连续失败3次，尝试重连PLC
+                if consecutive_errors >= 3:
+                    logger.warning("PLC连续读取失败，尝试重连...")
+                    self.disconnect_plc()
+                    time.sleep(2)
+                    if self.connect_plc():
+                        logger.info("PLC重连成功，恢复采集")
+                    else:
+                        logger.error("PLC重连失败，等待下次重试")
+                        time.sleep(10)
+                    consecutive_errors = 0  # 无论成败都重置，避免每次循环都重连
+                else:
+                    time.sleep(self.scan_interval)
 
         logger.info("报警数据采集循环已停止")
 
@@ -216,36 +262,33 @@ class PLCDataCollector:
             logger.warning("报警数据采集器已经在运行")
             return
 
-        # 连接到PLC
+        # 尝试连接PLC，失败则后台重试
         if not self.connect_plc():
-            logger.error("无法连接到PLC，无法启动采集器")
+            logger.warning("首次连接PLC失败，启动后台重连...")
+            self._start_connect_retry()
             return
 
-        # 不再连接MQTT，因为使用的是外部传入的实例
-
-        # 使用Event设置运行标志
-        self.running_event.set()
-        self.thread = threading.Thread(target=self.collect_loop, daemon=True)
-        self.thread.start()
-        logger.info("报警数据采集器已启动")
+        self._start_collection()
 
     def stop(self):
         """停止数据采集线程"""
+        self._shutting_down = True
+
         if not self.running_event.is_set():
-            logger.info("报警数据采集器已经停止")
+            logger.info("报警数据采集器未在运行状态")
+            self.disconnect_plc()
             return
 
         # 清除运行标志
         self.running_event.clear()
         logger.info("正在停止报警数据采集器...")
-        
+
         # 等待采集线程结束
         if self.thread:
-            self.thread.join(timeout=5)  # 等待最多5秒让线程结束
-            
+            self.thread.join(timeout=5)
+
         # 断开PLC连接
         self.disconnect_plc()
-        # 不再断开MQTT连接，因为那是主应用的责任
         logger.info("报警数据采集器已停止")
 
     def __enter__(self):

@@ -35,26 +35,30 @@ def create_app():
 
     # 连接到MQTT代理（只在适当的进程中）
     logger.info("Starting up IMM Report API...")
-    try:
-        logger.info("Attempting to connect to MQTT broker...")
-        if should_start_services:
+    if should_start_services:
+        # MQTT 和 PLC 独立启动，互不阻塞
+        try:
+            logger.info("Attempting to connect to MQTT broker...")
             app.mqtt_publisher.connect()
             if app.mqtt_publisher.is_connected:
                 logger.info("MQTT publisher initialized and connected successfully")
             else:
                 logger.warning("MQTT publisher initialized but not connected")
+        except Exception as e:
+            logger.error(f"Failed to connect to MQTT broker: {e}")
+            logger.info("MQTT will retry automatically in background")
 
-            # 只在适当的进程中启动PLC数据采集器
+        try:
             logger.info("Attempting to start PLC data collector...")
             app.plc_collector.start()
-            logger.info("PLC data collector started successfully")
-        else:
-            logger.info("Skipping MQTT connection and PLC data collector start in main process")
-
-    except Exception as e:
-        logger.error(f"Failed to initialize MQTT publisher or PLC collector: {e}")
-        import traceback
-        logger.error(f"Full traceback: {traceback.format_exc()}")
+            if app.plc_collector.thread is not None:
+                logger.info("PLC data collector started successfully")
+            else:
+                logger.warning("PLC data collector not started, will retry")
+        except Exception as e:
+            logger.error(f"Failed to start PLC data collector: {e}")
+    else:
+        logger.info("Skipping MQTT connection and PLC data collector start in main process")
 
 
     # 注册API路由
