@@ -95,6 +95,23 @@ def create_app():
         filename = 'xy_projection.png'
         return send_from_directory(directory_path, filename)
 
+    @app.route("/health")
+    def health_check():
+        """服务健康检查端点，用于监控 PLC 和 MQTT 状态"""
+        from flask import jsonify
+        plc_status = app.plc_collector.get_status()
+        mqtt_status = app.mqtt_publisher.get_status()
+        # 只有全部健康才返回 200
+        all_healthy = (
+            plc_status["healthy"]
+            and mqtt_status["is_really_connected"]
+        )
+        return jsonify({
+            "status": "ok" if all_healthy else "degraded",
+            "plc": plc_status,
+            "mqtt": mqtt_status,
+        }), 200 if all_healthy else 503
+
     # 初始化文件监控器
     file_monitor = FileMonitor(app.mqtt_publisher)
     app.file_monitor = file_monitor

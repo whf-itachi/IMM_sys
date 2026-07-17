@@ -88,11 +88,15 @@ class PLCDataCollector:
             return False
 
     def disconnect_plc(self):
-        """断开PLC连接"""
+        """断开PLC连接，内部异常已保护，不会向外抛出"""
         if self.protocol == 'snap7':
             if self.snap7_client:
-                self.snap7_client.disconnect()
-                logger.info("已断开Snap7 PLC连接")
+                try:
+                    self.snap7_client.disconnect()
+                    logger.info("已断开Snap7 PLC连接")
+                except Exception as e:
+                    logger.warning(f"断开PLC连接时出现异常(忽略): {e}")
+            self.snap7_client = None
 
     def connect_mqtt(self):
         """连接到MQTT服务器（使用外部传入的实例）"""
@@ -243,12 +247,19 @@ class PLCDataCollector:
                 # 连续失败3次，尝试重连PLC
                 if consecutive_errors >= 3:
                     logger.warning("PLC连续读取失败，尝试重连...")
-                    self.disconnect_plc()
+                    try:
+                        self.disconnect_plc()
+                    except Exception as disc_e:
+                        logger.error(f"重连过程中断开PLC异常(忽略，继续重连): {disc_e}")
                     time.sleep(2)
-                    if self.connect_plc():
-                        logger.info("PLC重连成功，恢复采集")
-                    else:
-                        logger.error("PLC重连失败，等待下次重试")
+                    try:
+                        if self.connect_plc():
+                            logger.info("PLC重连成功，恢复采集")
+                        else:
+                            logger.error("PLC重连失败，等待下次重试")
+                            time.sleep(10)
+                    except Exception as conn_e:
+                        logger.error(f"重连PLC时出现异常: {conn_e}")
                         time.sleep(10)
                     consecutive_errors = 0  # 无论成败都重置，避免每次循环都重连
                 else:
@@ -257,10 +268,19 @@ class PLCDataCollector:
         logger.info("报警数据采集循环已停止")
 
     def start(self):
-        """启动数据采集线程"""
-        if self.running_event.is_set():
+        """启动数据采集线程（支持 stop 后重新启动）"""
+        # 检查是否已有健康运行的线程
+        if self.running_event.is_set() and self.thread and self.thread.is_alive():
             logger.warning("报警数据采集器已经在运行")
             return
+
+        # 如果有僵尸线程（flag true 但线程已死），清理状态
+        if self.running_event.is_set() and (self.thread is None or not self.thread.is_alive()):
+            logger.warning("检测到采集线程已意外退出，重置状态重新启动")
+            self.running_event.clear()
+
+        # 重置关闭标志，支持 stop 后重新 start
+        self._shutting_down = False
 
         # 尝试连接PLC，失败则后台重试
         if not self.connect_plc():
@@ -290,6 +310,39 @@ class PLCDataCollector:
         # 断开PLC连接
         self.disconnect_plc()
         logger.info("报警数据采集器已停止")
+
+    def is_healthy(self):
+        """健康检查：采集线程是否正常运行"""
+        if not self.running_event.is_set():
+            return False, "采集器未启动"
+        if self.thread is None:
+            return False, "采集线程为空"
+        if not self.thread.is_alive():
+            return False, "采集线程已意外退出"
+        # 检查 PLC 连接状态
+        try:
+            if self.snap7_client and hasattr(self.snap7_client, 'get_connected'):
+                if not self.snap7_client.get_connected():
+                    return False, "PLC 连接已断开"
+        except Exception:
+            return False, "无法检查 PLC 连接状态"
+        return True, "正常"
+
+    def get_status(self):
+        """获取采集器完整状态信息"""
+        healthy, reason = self.is_healthy()
+        return {
+            "running": self.running_event.is_set(),
+            "healthy": healthy,
+            "reason": reason,
+            "plc_ip": self.plc_ip,
+            "plc_connected": self.snap7_client is not None and (
+                not hasattr(self.snap7_client, 'get_connected') or 
+                self.snap7_client.get_connected()
+            ) if self.snap7_client else False,
+            "scan_interval": self.scan_interval,
+            "shutting_down": self._shutting_down,
+        }
 
     def __enter__(self):
         """上下文管理器入口"""

@@ -8,6 +8,7 @@ import os
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -41,6 +42,9 @@ class JetLinksMQTTPublisher:
         self._reconnecting = False
         self._tls_insecure = True  # 是否关闭域名校验（自签证书开启True）
         self._shutting_down = False
+        # 离线消息缓冲队列：断连期间的事件暂存于此，连接恢复后自动发送
+        self._pending_queue: deque = deque(maxlen=500)
+        self._pending_lock = threading.Lock()
 
     def _cleanup_client(self):
         """清理旧客户端：停止网络循环、断开socket"""
@@ -110,8 +114,8 @@ class JetLinksMQTTPublisher:
                     if self._setup_tls():
                         logger.info(f"Certificate imported: {MQTT_CA_CERT_FILE}, hostname verification: {self._tls_insecure}")
 
-                # 设置重连参数
-                self._client.reconnect_delay_set(min_delay=2, max_delay=60)
+                # 由自定义 _auto_reconnect() 统一管理重连，避免 paho 内部重连与自定义重连冲突
+                # 不设置 reconnect_delay_set，以防产生双重重连链
 
                 # 连接服务器
                 self._client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=MQTT_KEEP_ALIVE)
@@ -225,6 +229,12 @@ class JetLinksMQTTPublisher:
     def disconnect(self):
         """安全断开连接，释放资源"""
         self._shutting_down = True
+        # 清空离线缓冲队列
+        with self._pending_lock:
+            count = len(self._pending_queue)
+            self._pending_queue.clear()
+            if count > 0:
+                logger.info(f"关闭连接时清除 {count} 条缓冲消息")
         if self._client:
             logger.info("Disconnecting from MQTT broker...")
             self._client.loop_stop()
@@ -239,6 +249,8 @@ class JetLinksMQTTPublisher:
             self._connected = True
             self._reconnecting = False
             self._connect_attempts = 0
+            # 连接恢复后立即发送积压的离线消息
+            self._flush_pending()
         else:
             logger.error(f"Connection to MQTT broker failed with result code {rc}")
             self._connected = False
@@ -292,11 +304,7 @@ class JetLinksMQTTPublisher:
             return False
 
     def publish_event(self, event_name: str, event_data: dict) -> bool:
-        """上报通用事件消息"""
-        if not self._is_connected():
-            logger.error(f"MQTT client not connected, skip {event_name} event publish")
-            return False
-
+        """上报通用事件消息（非阻塞，断连时自动缓冲）"""
         try:
             standard_payload = {
                 "messageId": str(uuid.uuid4()),
@@ -306,16 +314,21 @@ class JetLinksMQTTPublisher:
             payload_json = json.dumps(standard_payload, ensure_ascii=False)
             topic = MQTT_EVENT_TOPIC_FORMAT.format(event_id=event_name)
 
+            if not self._is_connected():
+                # 断连时缓冲到队列，连接恢复后自动发送
+                self._enqueue_pending(topic, payload_json, event_name)
+                return False
+
             logger.info(f"Event topic: {topic}, payload: {payload_json}")
             pub_result = self._client.publish(topic, payload_json, qos=1)
-            pub_result.wait_for_publish(timeout=3)
-
-            logger.info(f"Publish result rc={pub_result.rc}, mid={pub_result.mid}")
+            # 不调用 wait_for_publish，避免阻塞采集线程；
+            # QoS 1 保证至少一次送达，paho 内部异步处理
             if pub_result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"{event_name} event queued success, mid={pub_result.mid}")
+                logger.debug(f"{event_name} event queued, mid={pub_result.mid}")
                 return True
             else:
                 logger.error(f"{event_name} event publish failed, rc={pub_result.rc}")
+                self._enqueue_pending(topic, payload_json, event_name)
                 return False
         except (TypeError, ValueError) as e:
             logger.error(f"Serialize {event_name} event json error: {e}, data={event_data}")
@@ -324,10 +337,66 @@ class JetLinksMQTTPublisher:
             logger.error(f"Publish {event_name} event unknown error: {e}", exc_info=True)
             return False
 
+    def _enqueue_pending(self, topic: str, payload: str, event_name: str):
+        """将消息放入离线缓冲队列"""
+        with self._pending_lock:
+            if len(self._pending_queue) >= self._pending_queue.maxlen:
+                # 队列满时丢弃最旧的消息
+                self._pending_queue.popleft()
+                logger.warning(f"离线缓冲队列已满，丢弃最旧的消息")
+            self._pending_queue.append((topic, payload))
+            logger.info(f"事件 {event_name} 已缓冲到离线队列 (队列长度: {len(self._pending_queue)})")
+
+    def _flush_pending(self):
+        """连接恢复后发送所有缓冲的消息"""
+        with self._pending_lock:
+            if not self._pending_queue:
+                return
+            count = len(self._pending_queue)
+            logger.info(f"开始发送 {count} 条缓冲消息...")
+            while self._pending_queue:
+                topic, payload = self._pending_queue.popleft()
+                try:
+                    self._client.publish(topic, payload, qos=1)
+                except Exception as e:
+                    logger.error(f"发送缓冲消息失败: {e}")
+                    # 发送失败放回队列头部，下次重试
+                    self._pending_queue.appendleft((topic, payload))
+                    break
+            remaining = len(self._pending_queue)
+            logger.info(f"缓冲消息发送完成，已发送 {count - remaining} 条，剩余 {remaining} 条")
+
+    @property
+    def pending_count(self) -> int:
+        """获取待发送的缓冲消息数"""
+        with self._pending_lock:
+            return len(self._pending_queue)
+
     def _is_connected(self) -> bool:
-        """检查连接状态"""
-        return self._client is not None and self._connected
+        """检查连接状态（同时校验本地标志和 paho 内部状态）"""
+        if self._client is None or not self._connected:
+            return False
+        # 双重校验：paho 内部可能状态已变但回调未及时触发
+        try:
+            if not self._client.is_connected():
+                logger.debug("paho 内部状态显示已断开，本地 _connected 可能过期")
+                self._connected = False
+                return False
+        except Exception:
+            return False
+        return True
 
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def get_status(self):
+        """获取 MQTT 发布器完整状态"""
+        return {
+            "connected": self._connected,
+            "is_really_connected": self._is_connected(),
+            "reconnecting": self._reconnecting,
+            "connect_attempts": self._connect_attempts,
+            "pending_messages": self.pending_count,
+            "shutting_down": self._shutting_down,
+        }
