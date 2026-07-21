@@ -40,6 +40,7 @@ class JetLinksMQTTPublisher:
         self._lock = threading.RLock()
         self._connect_attempts = 0
         self._reconnecting = False
+        self._connecting = False  # 单次飞行：标记是否已有 connect 生命周期在运行中
         self._tls_insecure = True  # 是否关闭域名校验（自签证书开启True）
         self._shutting_down = False
         # 离线消息缓冲队列：断连期间的事件暂存于此，连接恢复后自动发送
@@ -62,7 +63,14 @@ class JetLinksMQTTPublisher:
             pass
 
     def connect(self):
-        """Initialize and connect the MQTT client."""
+        """Initialize and connect the MQTT client.
+
+        注意：connect() 可能被多个线程并发进入（启动连接 main.py、后台重连线程
+        reconnect_task、以及 paho 网络线程触发的回调）。self._client 是共享可变字段，
+        必须在同一把锁内完成“清理旧连接 -> 创建新 client -> TLS 配置 -> connect -> loop_start”，
+        否则会出现一个线程把 self._client 置 None、另一个线程正要对其做 tls_set 的竞态
+        （AttributeError: 'NoneType' object has no attribute 'tls_set'）。
+        """
         logger.info("Initializing MQTT connection to JetLinks...")
         if self._connected:
             logger.info("MQTT client is already connected.")
@@ -72,8 +80,15 @@ class JetLinksMQTTPublisher:
             if self._connected:
                 logger.info("MQTT client is already connected.")
                 return
+            # 单次飞行：已有 connect 生命周期在跑则直接跳过，避免并发竞态
+            if self._connecting:
+                logger.info("MQTT connect already in progress, skip concurrent call.")
+                return
+            self._connecting = True
 
-            # 清理旧连接，防止loop_start线程泄漏
+            # 清理旧连接，防止 loop_start 线程泄漏。
+            # 必须在锁内，与下方的“创建 client + TLS 配置 + connect + loop_start”构成原子段，
+            # 其它线程无法在中间插入 _cleanup_client 把 self._client 置 None。
             self._cleanup_client()
 
             try:
@@ -108,7 +123,7 @@ class JetLinksMQTTPublisher:
                 self._client.on_publish = self._on_publish
                 self._client.on_log = self._on_log
 
-                # TLS配置
+                # TLS 配置（此时 self._client 一定非空：整个构建段在锁内，其它线程无法插入 _cleanup_client）
                 if MQTT_USE_TLS:
                     logger.info("Enabling TLS for MQTT connection.")
                     if self._setup_tls():
@@ -117,31 +132,47 @@ class JetLinksMQTTPublisher:
                 # 由自定义 _auto_reconnect() 统一管理重连，避免 paho 内部重连与自定义重连冲突
                 # 不设置 reconnect_delay_set，以防产生双重重连链
 
-                # 连接服务器
+                # 连接服务器（阻塞调用，仍在锁内；此时不会有其它线程同时操作 self._client）
                 self._client.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=MQTT_KEEP_ALIVE)
                 logger.info(f"Connecting to MQTT broker at {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}...")
 
                 # 启动网络循环
                 self._client.loop_start()
 
-                # 等待连接完成
-                if not self._wait_for_connection():
-                    self._handle_connection_timeout()
-
-                logger.info("Successfully connected to JetLinks MQTT broker.")
-                self._connect_attempts = 0
-
             except Exception as e:
-                logger.error(f"Error connecting to MQTT broker: {e}", exc_info=True)
+                self._connecting = False
                 self._connected = False
                 self._reconnecting = False
                 self._cleanup_client()
                 # 首次连接失败也自动重试（如开机时网络未就绪）
                 self._auto_reconnect()
+                logger.error(f"Error connecting to MQTT broker: {e}", exc_info=True)
                 raise e
+
+        # 等待连接结果：放在锁外，允许 paho 网络线程的 on_connect/on_disconnect 回调
+        # （它们会获取同一把锁）正常执行，避免死锁。
+        try:
+            if not self._wait_for_connection():
+                self._handle_connection_timeout()
+        except Exception as e:
+            self._connected = False
+            self._reconnecting = False
+            self._cleanup_client()
+            self._auto_reconnect()
+            logger.error(f"Error connecting to MQTT broker: {e}", exc_info=True)
+            raise e
+        finally:
+            self._connecting = False
+
+        logger.info("Successfully connected to JetLinks MQTT broker.")
+        self._connect_attempts = 0
 
     def _setup_tls(self):
         """设置TLS连接参数"""
+        # 防御性兜底：极端竞态下 self._client 可能为 None，避免抛 AttributeError 刷屏
+        if self._client is None:
+            logger.error("TLS setup skipped: MQTT client is None (possible concurrent reconnect race)")
+            return False
         # 检查证书文件
         if not os.path.exists(MQTT_CA_CERT_FILE):
             logger.warning(f"No certificate file found: {MQTT_CA_CERT_FILE}, disabling verification.")
@@ -173,16 +204,22 @@ class JetLinksMQTTPublisher:
         return self._connected
 
     def _handle_connection_timeout(self):
-        """处理连接超时"""
-        logger.warning("Initial connection attempt timed out, trying manual reconnect...")
-        try:
-            self._client.reconnect()
-        except Exception as e:
-            logger.error(f"Manual reconnect failed: {e}")
-        
-        time.sleep(2)
-        if not self._connected:
-            raise ConnectionError("Failed to connect to MQTT broker within timeout period.")
+        """连接超时处理
+
+        connect() 第136行已发起一次阻塞式 CONNECT。若 15s 内未收到 CONNACK，
+        说明本次握手未成功，直接抛异常交由外层 connect() 走后台指数退避重连即可，
+        **不要**在此再同步调一次 self._client.reconnect()——否则每个重连周期会向 broker
+        发两次 CONNECT（一次来自 connect()、一次来自这里的 reconnect()）：既翻倍请求量，
+        又会制造“先 rc=4 被拒、同周期又 rc=0”的混乱日志（设备被后台禁用/鉴权被拒时尤明显）。
+        """
+        if self._shutting_down:
+            logger.info("Shutting down, skip connection timeout handling.")
+            return
+        logger.warning(
+            "Initial connection attempt timed out, delegating to background reconnect "
+            "(no redundant manual reconnect)."
+        )
+        raise ConnectionError("Failed to connect to MQTT broker within timeout period.")
 
     def _auto_reconnect(self):
         """断线后台指数退避重连，独立线程执行"""
@@ -229,6 +266,7 @@ class JetLinksMQTTPublisher:
     def disconnect(self):
         """安全断开连接，释放资源"""
         self._shutting_down = True
+        self._connecting = False
         # 清空离线缓冲队列
         with self._pending_lock:
             count = len(self._pending_queue)
